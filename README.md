@@ -1,39 +1,39 @@
 # GlideBoard
 
-Teclado flotante con **glide/swipe typing** para macOS — escribe palabras deslizando el ratón o el trackpad sobre un teclado en pantalla, como el teclado de Android. Pensado para escribir con una sola mano.
+A floating **glide/swipe typing** keyboard for macOS. Type words by sliding your mouse or trackpad across an on-screen keyboard, much like an Android keyboard. Designed for one-handed typing.
 
-## Compilar y ejecutar
+## Build and Run
 
 ```sh
 ./build.sh
 open build/GlideBoard.app
 ```
 
-Requiere Xcode Command Line Tools (Swift). La primera vez, macOS pedirá el permiso de **Accesibilidad** (Ajustes del Sistema → Privacidad y seguridad → Accesibilidad): es necesario para que la app pueda "teclear" en otras aplicaciones.
+Requires Xcode Command Line Tools (Swift). On first launch, macOS will request **Accessibility** permission (System Settings → Privacy & Security → Accessibility), which is required for the app to type into other applications.
 
-> La app se firma con un certificado autofirmado estable ("GlideBoard Signing", en tu llavero de inicio de sesión), de modo que el permiso de Accesibilidad sobrevive a las recompilaciones. Si ese certificado no existe, `build.sh` recurre a firma ad-hoc y entonces habría que volver a conceder el permiso tras cada build (`tccutil reset Accessibility com.jon.glideboard` ayuda a limpiar el estado obsoleto).
+> The app is signed with a stable self-signed certificate ("GlideBoard Signing" in your login keychain), allowing Accessibility permission to persist across rebuilds. If the certificate is unavailable, `build.sh` falls back to ad-hoc signing, which requires granting permission again after each build. Running `tccutil reset Accessibility com.jon.glideboard` can help clear stale permission state.
 
-## Uso
+## Usage
 
-- **⌥⌘G** muestra/oculta el teclado flotante (también desde el icono ⌨︎ de la barra de menús).
-- El teclado **no roba el foco**: el texto va a la app donde estés escribiendo (Notas, Safari, Slack…).
-- **Desliza** sobre las letras de una palabra sin soltar el botón y suelta al acabar: se inserta la mejor predicción, con espacio automático entre palabras. Mientras deslizas, la barra superior muestra en vivo la palabra que se va formando.
-- La **barra superior** muestra hasta 4 candidatas; haz clic en otra para sustituir la palabra recién insertada.
-- Encima de las candidatas hay una fila en *cursiva* con **predicciones de la palabra siguiente**, que se actualiza tras cada palabra (modelo de bigramas: corpus + lo que tú escribes, guardado en `~/Library/Application Support/GlideBoard/`). Haz clic para insertarla; encadenando clics construyes frases enteras.
-- **Clic corto** en una tecla = pulsación normal (letra, espacio, `.` `,` ⏎).
-- **⌫** justo después de un glide borra la palabra entera; después, borra letra a letra.
-- Botón **ES/EN** (o el menú de la barra) cambia de idioma (español con ñ y ~30.000 palabras; inglés con ~10.000).
-- **Ajustes…** (menú ⌨︎ de la barra): cambiar el atajo de mostrar/ocultar (clic en el botón y pulsa la combinación nueva), idioma por defecto y tamaño del teclado (70–160 %). Se guardan en las preferencias del usuario.
-- Arrastra el asa superior para mover el teclado. **✕** lo oculta.
+- Press **⌥⌘G** to show or hide the floating keyboard. You can also use the ⌨︎ menu bar icon.
+- The keyboard **does not steal focus**: text is sent to the app where you are currently typing, such as Notes, Safari, or Slack.
+- **Glide** across the letters of a word without releasing the button, then release when finished. The best prediction is inserted, with automatic spacing between words. While gliding, the top bar displays the word being formed in real time.
+- The **top bar** displays up to four candidates. Click another candidate to replace the word that was just inserted.
+- An *italicized* row above the candidates displays **next-word predictions**, updated after every word using a bigram model based on the bundled corpus and your typing history. Your history is stored in `~/Library/Application Support/GlideBoard/`. Click a prediction to insert it; chain clicks together to build complete sentences.
+- A **short click** on a key performs a regular key press: letter, space, `.`, `,`, or Return.
+- Pressing **⌫** immediately after a glide deletes the entire word. Subsequent presses delete one character at a time.
+- Use the **ES/EN** button or menu bar menu to switch languages. Spanish includes `ñ` and approximately 30,000 words; English includes approximately 10,000 words.
+- Open **Settings…** from the ⌨︎ menu bar menu to change the show/hide shortcut, default language, and keyboard size (70–160%). Preferences are saved automatically.
+- Drag the top handle to move the keyboard. Click **✕** to hide it.
 
-## Cómo funciona
+## How It Works
 
-- `NSPanel` con `.nonactivatingPanel` para flotar sin activar la app.
-- Reconocimiento de gestos estilo **SHARK2**: el trazo se remuestrea y se compara (posición + forma + frecuencia de la palabra) contra la polilínea ideal de cada palabra candidata, con poda por primera/última letra.
-- El texto se inyecta con eventos `CGEvent` (por eso hace falta Accesibilidad).
-- Atajo global con Carbon `RegisterEventHotKey` (no necesita permisos).
+- Uses an `NSPanel` with `.nonactivatingPanel` to float without activating the app.
+- Uses **SHARK2-style** gesture recognition: the path is resampled and compared against each candidate word's ideal polyline using position, shape, and word frequency, with first/last-letter pruning.
+- Injects text using `CGEvent`, which is why Accessibility permission is required.
+- Registers the global shortcut with Carbon `RegisterEventHotKey`, which does not require permission.
 
-## Limitaciones (v0.1)
+## Limitations (v0.1)
 
-- Solo minúsculas (sin Shift); los acentos se escriben tal cual aparezcan en la candidata (el diccionario español incluye tildes).
-- El diccionario de palabras es fijo (no aprende palabras nuevas), aunque las predicciones de palabra siguiente sí aprenden de tu uso.
+- Lowercase only, with no Shift support. Accented characters are inserted as they appear in the selected candidate; the Spanish dictionary includes accented words.
+- The word dictionary is fixed and does not learn new words, although next-word predictions do learn from your usage.
