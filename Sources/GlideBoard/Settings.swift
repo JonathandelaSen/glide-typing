@@ -1,0 +1,67 @@
+import AppKit
+import Carbon
+
+enum Settings {
+    private static let defaults = UserDefaults.standard
+
+    /// Hotkey to show/hide the keyboard (Carbon key code + modifiers).
+    static var hotKeyCode: UInt32 {
+        get { (defaults.object(forKey: "hotKeyCode") as? NSNumber)?.uint32Value ?? UInt32(kVK_ANSI_G) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "hotKeyCode") }
+    }
+
+    static var hotKeyModifiers: UInt32 {
+        get { (defaults.object(forKey: "hotKeyModifiers") as? NSNumber)?.uint32Value ?? UInt32(cmdKey | optionKey) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "hotKeyModifiers") }
+    }
+
+    static var language: Language {
+        get { Language(rawValue: defaults.string(forKey: "language") ?? "") ?? .spanish }
+        set { defaults.set(newValue.rawValue, forKey: "language") }
+    }
+
+    /// Keyboard size multiplier.
+    static var scale: Double {
+        get {
+            let v = defaults.double(forKey: "scale")
+            return v == 0 ? 1.0 : min(max(v, 0.7), 1.6)
+        }
+        set { defaults.set(newValue, forKey: "scale") }
+    }
+}
+
+// MARK: - Shortcut helpers
+
+func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+    var mods: UInt32 = 0
+    if flags.contains(.command) { mods |= UInt32(cmdKey) }
+    if flags.contains(.option) { mods |= UInt32(optionKey) }
+    if flags.contains(.control) { mods |= UInt32(controlKey) }
+    if flags.contains(.shift) { mods |= UInt32(shiftKey) }
+    return mods
+}
+
+func shortcutDescription(keyCode: UInt32, modifiers: UInt32) -> String {
+    var s = ""
+    if modifiers & UInt32(controlKey) != 0 { s += "⌃" }
+    if modifiers & UInt32(optionKey) != 0 { s += "⌥" }
+    if modifiers & UInt32(shiftKey) != 0 { s += "⇧" }
+    if modifiers & UInt32(cmdKey) != 0 { s += "⌘" }
+    return s + keyName(for: keyCode)
+}
+
+func keyName(for keyCode: UInt32) -> String {
+    let names: [UInt32: String] = [
+        0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H",
+        34: "I", 38: "J", 40: "K", 37: "L", 46: "M", 45: "N", 31: "O", 35: "P",
+        12: "Q", 15: "R", 1: "S", 17: "T", 32: "U", 9: "V", 13: "W", 7: "X",
+        16: "Y", 6: "Z",
+        29: "0", 18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6",
+        26: "7", 28: "8", 25: "9",
+        49: "Espacio", 36: "↩", 48: "⇥", 51: "⌫", 53: "⎋",
+        123: "←", 124: "→", 125: "↓", 126: "↑",
+        122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+        98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12"
+    ]
+    return names[keyCode] ?? "key\(keyCode)"
+}
