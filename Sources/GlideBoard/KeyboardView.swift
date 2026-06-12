@@ -391,26 +391,64 @@ final class KeyboardView: NSView {
 
     private var swipeAccum = CGVector.zero
     private var swipeActive = false
+    private var swipePath: [CGPoint] = []
 
     override func scrollWheel(with event: NSEvent) {
         // Normalize deltas to finger direction regardless of "natural scrolling".
         let factor: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
         if event.phase == .began {
             swipeAccum = .zero
+            swipePath = [.zero]
             swipeActive = true
         }
         if swipeActive, event.phase == .changed {
             swipeAccum.dx += event.scrollingDeltaX * factor
             swipeAccum.dy += event.scrollingDeltaY * factor
+            swipePath.append(CGPoint(x: swipeAccum.dx, y: swipeAccum.dy))
         }
         if event.phase == .ended {
             swipeActive = false
-            classifySwipe(swipeAccum)
+            if isCircularStroke(swipePath) {
+                toggleInputMode()
+            } else {
+                classifySwipe(swipeAccum)
+            }
         }
         // Legacy mouse wheel (no gesture phases): each notch is a vertical swipe.
         if event.phase == [] && event.momentumPhase == [] {
             classifySwipe(CGVector(dx: 0, dy: event.scrollingDeltaY * factor * 12))
         }
+    }
+
+    /// A circular two-finger stroke: lots of travel, little net displacement,
+    /// and the direction of motion rotates most of a full turn.
+    private func isCircularStroke(_ path: [CGPoint]) -> Bool {
+        guard path.count >= 8 else { return false }
+        // Direction samples from segments long enough to be meaningful.
+        var directions: [CGFloat] = []
+        var prev = path[0]
+        var pathLength: CGFloat = 0
+        for p in path.dropFirst() {
+            let dx = p.x - prev.x, dy = p.y - prev.y
+            let seg = hypot(dx, dy)
+            pathLength += seg
+            if seg > 3 {
+                directions.append(atan2(dy, dx))
+                prev = p
+            }
+        }
+        guard directions.count >= 6, pathLength > 90 else { return false }
+        let net = hypot(path.last!.x, path.last!.y)
+        guard net < pathLength * 0.45 else { return false }
+        // Accumulated signed turning angle.
+        var winding: CGFloat = 0
+        for i in 1..<directions.count {
+            var d = directions[i] - directions[i - 1]
+            while d > .pi { d -= 2 * .pi }
+            while d < -.pi { d += 2 * .pi }
+            winding += d
+        }
+        return abs(winding) > 4.4 // ~250° of rotation
     }
 
     private func classifySwipe(_ v: CGVector) {
@@ -422,7 +460,36 @@ final class KeyboardView: NSView {
         let direction: FlickDirection = abs(v.dx) > abs(fingerY)
             ? (v.dx > 0 ? .right : .left)
             : (fingerY > 0 ? .up : .down)
+
+        // While a trace is in progress the swipe applies to THAT word,
+        // never to the previously inserted one.
+        if hoverTracing {
+            switch direction {
+            case .up:
+                guard !candidates.isEmpty else { return }
+                resetTraceState()
+                flash("✓")
+                delegate?.keyboardView(self, didGlideSelect: 0)
+                return
+            case .left:
+                // Cancel the in-progress word without typing anything.
+                resetTraceState()
+                flash("✕")
+                return
+            case .right, .down:
+                // Commit the word first, then apply the action.
+                endTapTrace(typeLetterIfShort: false)
+            }
+        }
         delegate?.keyboardView(self, didFlick: direction)
+    }
+
+    private func resetTraceState() {
+        hoverTracing = false
+        tracePoints = []
+        pressedKeyIndex = nil
+        hoverKeyIndex = nil
+        needsDisplay = true
     }
 
     // MARK: - Right-click menu: editing actions
@@ -553,7 +620,7 @@ final class KeyboardView: NSView {
         let items: [(arrow: String, label: String, dx: CGFloat, dy: CGFloat)] = [
             ("→", "espacio", 1, 0),
             ("←", "borrar", -1, 0),
-            ("↑", "aceptar ✦", 0, -1),
+            ("↑", "aceptar palabra", 0, -1),
             ("↓", "punto", 0, 1)
         ]
 
@@ -578,7 +645,13 @@ final class KeyboardView: NSView {
             label.draw(at: CGPoint(x: pos.x - lSize.width / 2, y: pos.y + 9))
         }
 
-        // Right-click hint at the bottom.
+        // Hints at the bottom.
+        let circleHint = NSAttributedString(string: "⟳ trazo circular: cambiar modo ● pulsación / ∿ arrastre",
+                                            attributes: [
+                                                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                                                .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+                                            ])
+        circleHint.draw(at: CGPoint(x: area.midX - circleHint.size().width / 2, y: area.maxY - 42))
         let hint = NSAttributedString(string: "clic derecho: pegar · copiar todo · borrar hasta el final / principio · borrar todo",
                                       attributes: [
                                           .font: NSFont.systemFont(ofSize: 11, weight: .medium),

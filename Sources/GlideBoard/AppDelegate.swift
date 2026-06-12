@@ -534,11 +534,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             view.flash(".")
             keyboardView(view, didTap: Key(action: .char("."), label: "", unitFrame: .zero))
         case .up:
-            if let ghost = view.ghost {
-                view.flash("✦")
-                keyboardView(view, didPickGhost: ghost)
+            // Accept the first suggested word (dictionary row, then AI row).
+            if !view.candidates.isEmpty {
+                view.flash("✓")
+                keyboardView(view, didPickCandidate: 0)
+            } else if !view.predictions.isEmpty {
+                view.flash("✓")
+                keyboardView(view, didPickPrediction: 0)
             } else {
-                view.flash("✦?") // nothing to accept yet
+                view.flash("✓?") // nothing to accept yet
             }
         }
     }
