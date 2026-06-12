@@ -11,18 +11,37 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardView(_ view: KeyboardView, didGlideSelect index: Int)
     /// A two-finger swipe shortcut over the keyboard.
     func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection)
+    /// An editing action chosen from the right-click menu.
+    func keyboardView(_ view: KeyboardView, didEdit action: EditAction)
+    /// The user toggled between tap mode and drag (no-click glide) mode.
+    func keyboardView(_ view: KeyboardView, didSetHoverGlide enabled: Bool)
 }
 
 /// Two-finger swipe directions and their shortcut actions.
 enum FlickDirection {
-    case left       // delete word / character
-    case right      // space
-    case up         // accept the AI phrase completion
-    case down       // period
-    case upLeft     // delete from cursor to end
-    case upRight    // select all + copy
-    case downLeft   // delete everything
-    case downRight  // paste
+    case left   // delete word / character
+    case right  // space
+    case up     // accept the AI phrase completion
+    case down   // period
+}
+
+/// Editing actions available from the right-click menu.
+enum EditAction: CaseIterable {
+    case paste
+    case selectAllCopy
+    case deleteToEnd
+    case deleteToStart
+    case deleteAll
+
+    var title: String {
+        switch self {
+        case .paste: return "Pegar"
+        case .selectAllCopy: return "Seleccionar todo y copiar"
+        case .deleteToEnd: return "Borrar hasta el final"
+        case .deleteToStart: return "Borrar hasta el principio"
+        case .deleteAll: return "Borrar todo"
+        }
+    }
 }
 
 final class KeyboardView: NSView {
@@ -168,6 +187,12 @@ final class KeyboardView: NSView {
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
 
+        // Mode switch (tap ↔ drag) in the handle strip.
+        if modeButtonRect.insetBy(dx: -4, dy: -4).contains(p) && !showHelp {
+            toggleInputMode()
+            return
+        }
+
         // Help legend: the "?" button toggles it; any click closes it.
         if showHelp {
             showHelp = false
@@ -177,6 +202,22 @@ final class KeyboardView: NSView {
         if helpButtonRect.insetBy(dx: -4, dy: -4).contains(p) {
             showHelp = true
             needsDisplay = true
+            return
+        }
+
+        // A tap while tracing commits the word — or picks the suggestion
+        // it landed on.
+        if hoverTracing {
+            if let i = candidateRects.firstIndex(where: { $0.contains(p) }), i < candidates.count {
+                hoverTracing = false
+                tracePoints = []
+                pressedKeyIndex = nil
+                hoverKeyIndex = nil
+                needsDisplay = true
+                delegate?.keyboardView(self, didGlideSelect: i)
+            } else {
+                endTapTrace(typeLetterIfShort: true)
+            }
             return
         }
 
@@ -238,9 +279,12 @@ final class KeyboardView: NSView {
         guard tracking else { return }
         tracking = false
         defer {
-            tracePoints = []
-            pressedKeyIndex = nil
-            hoverKeyIndex = nil
+            // Keep the trace alive if this tap just started tap-toggle gliding.
+            if !hoverTracing {
+                tracePoints = []
+                pressedKeyIndex = nil
+                hoverKeyIndex = nil
+            }
             hoverCandidateIndex = nil
             needsDisplay = true
         }
@@ -256,10 +300,90 @@ final class KeyboardView: NSView {
 
         if isTap {
             if let idx = pressedKeyIndex {
-                delegate?.keyboardView(self, didTap: layout.keys[idx])
+                let key = layout.keys[idx]
+                if hoverGlideEnabled && key.isLetter {
+                    // Drag mode: a soft tap starts gliding without holding.
+                    startTapTrace(at: convert(event.locationInWindow, from: nil), keyIndex: idx)
+                } else {
+                    delegate?.keyboardView(self, didTap: key)
+                }
             }
         } else if let idx = pressedKeyIndex, layout.keys[idx].isLetter {
             delegate?.keyboardView(self, didGlide: tracePoints)
+        }
+    }
+
+    // MARK: - Tap-toggle glide (no holding needed)
+    // A soft tap on a letter starts the trace; move the pointer freely
+    // (no button held); another tap commits the word. A tap-tap with no
+    // movement in between types the letter, so tap-typing still works.
+
+    var hoverGlideEnabled = true
+    private var hoverTracing = false
+
+    private var modeButtonRect: CGRect {
+        CGRect(x: 10, y: 2, width: 34, height: 16)
+    }
+
+    private func toggleInputMode() {
+        if hoverTracing { endTapTrace(typeLetterIfShort: false) }
+        hoverGlideEnabled.toggle()
+        flash(hoverGlideEnabled ? "∿ arrastre" : "● pulsación")
+        delegate?.keyboardView(self, didSetHoverGlide: hoverGlideEnabled)
+        needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if hoverTracing { endTapTrace(typeLetterIfShort: false) }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        guard hoverTracing else { return }
+        if p.y >= keysOriginY {
+            tracePoints.append(p)
+            hoverKeyIndex = keyIndex(at: p)
+            let now = Date.timeIntervalSinceReferenceDate
+            if now - lastPreviewTime > 0.09 {
+                lastPreviewTime = now
+                delegate?.keyboardView(self, didUpdateGlide: tracePoints)
+            }
+        }
+        needsDisplay = true
+    }
+
+    private func startTapTrace(at p: CGPoint, keyIndex idx: Int) {
+        hoverTracing = true
+        tracePoints = [p]
+        pressedKeyIndex = idx
+        hoverKeyIndex = idx
+        needsDisplay = true
+    }
+
+    private func endTapTrace(typeLetterIfShort: Bool) {
+        hoverTracing = false
+        let points = tracePoints
+        let pressed = pressedKeyIndex
+        tracePoints = []
+        pressedKeyIndex = nil
+        hoverKeyIndex = nil
+        needsDisplay = true
+        let length = GestureDecoder.pathLength(points)
+        if length < unit * 0.45 {
+            // tap-tap without movement: the user wanted that letter.
+            if typeLetterIfShort, let pressed {
+                delegate?.keyboardView(self, didTap: layout.keys[pressed])
+            }
+        } else {
+            delegate?.keyboardView(self, didGlide: points)
         }
     }
 
@@ -305,26 +429,21 @@ final class KeyboardView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
-        let actions: [(title: String, direction: FlickDirection)] = [
-            ("Pegar", .downRight),
-            ("Seleccionar todo y copiar", .upRight),
-            ("Borrar hasta el final", .upLeft),
-            ("Borrar todo", .downLeft)
-        ]
+        let actions = EditAction.allCases
         for (i, action) in actions.enumerated() {
             let item = NSMenuItem(title: action.title, action: #selector(menuAction(_:)), keyEquivalent: "")
             item.target = self
             item.tag = i
             menu.addItem(item)
-            if i == 1 { menu.addItem(.separator()) }
+            if action == .selectAllCopy { menu.addItem(.separator()) }
         }
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 
     @objc private func menuAction(_ sender: NSMenuItem) {
-        let directions: [FlickDirection] = [.downRight, .upRight, .upLeft, .downLeft]
-        guard sender.tag < directions.count else { return }
-        delegate?.keyboardView(self, didFlick: directions[sender.tag])
+        let actions = EditAction.allCases
+        guard sender.tag < actions.count else { return }
+        delegate?.keyboardView(self, didEdit: actions[sender.tag])
     }
 
     // MARK: - Gesture feedback flash
@@ -379,7 +498,21 @@ final class KeyboardView: NSView {
         }
 
         drawHelpButton()
+        drawModeButton()
         if showHelp { drawHelpOverlay() }
+    }
+
+    private func drawModeButton() {
+        let rect = modeButtonRect
+        NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).fill()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+        ]
+        let s = NSAttributedString(string: hoverGlideEnabled ? "∿" : "●", attributes: attrs)
+        let size = s.size()
+        s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
     }
 
     private func drawHelpButton() {
@@ -446,7 +579,7 @@ final class KeyboardView: NSView {
         }
 
         // Right-click hint at the bottom.
-        let hint = NSAttributedString(string: "clic derecho: pegar · copiar todo · borrar hasta el final · borrar todo",
+        let hint = NSAttributedString(string: "clic derecho: pegar · copiar todo · borrar hasta el final / principio · borrar todo",
                                       attributes: [
                                           .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                                           .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)

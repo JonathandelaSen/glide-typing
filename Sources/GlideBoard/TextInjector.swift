@@ -38,10 +38,22 @@ enum TextInjector {
         }
     }
 
+    /// Post shortcuts spaced out in time: apps need a beat to process each
+    /// one (e.g. select-all must land before copy reads the selection).
+    static func pressSequence(_ steps: [(key: CGKeyCode, flags: CGEventFlags)],
+                              interval: TimeInterval = 0.09) {
+        for (i, step) in steps.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + interval * Double(i)) {
+                pressKey(step.key, flags: step.flags)
+            }
+        }
+    }
+
     static let backspaceKey: CGKeyCode = 51
     static let returnKey: CGKeyCode = 36
     static let forwardDeleteKey: CGKeyCode = 117
     static let downArrowKey: CGKeyCode = 125
+    static let upArrowKey: CGKeyCode = 126
     static let rightArrowKey: CGKeyCode = 124
     static let aKey: CGKeyCode = 0
     static let cKey: CGKeyCode = 8

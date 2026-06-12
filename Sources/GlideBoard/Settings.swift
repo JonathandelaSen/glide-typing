@@ -31,6 +31,12 @@ enum Settings {
         set { defaults.set(newValue, forKey: "ollamaModel") }
     }
 
+    /// Glide by hovering: pause on a letter to start, pause again to commit.
+    static var hoverGlide: Bool {
+        get { defaults.object(forKey: "hoverGlide") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "hoverGlide") }
+    }
+
     /// Keyboard size multiplier.
     static var scale: Double {
         get {

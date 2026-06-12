@@ -58,6 +58,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
     var onCompletionEngineChange: (() -> Void)?
+    var onHoverGlideChange: ((Bool) -> Void)?
+    var onUserDictionaryChange: (([String]) -> Void)?
+    private var dictionaryView: NSTextView!
+    private var hoverCheck: NSButton!
 
     private var scaleLabel: NSTextField!
     private var languagePopup: NSPopUpButton!
@@ -65,7 +69,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var ollamaModelField: NSTextField!
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 200),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 440),
                               styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         window.title = "Ajustes de GlideBoard"
@@ -114,10 +118,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ollamaModelField.widthAnchor.constraint(equalToConstant: 160).isActive = true
         ollamaModelField.isEnabled = Settings.completionEngine == "ollama"
 
+        hoverCheck = NSButton(checkboxWithTitle: "modo arrastre ∿ (toque inicia, toque termina)",
+                              target: self, action: #selector(hoverGlideChanged(_:)))
+        hoverCheck.state = Settings.hoverGlide ? .on : .off
+
         let grid = NSGridView(views: [
             [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
             [makeLabel("Idioma:"), languagePopup],
             [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
+            [makeLabel("Glide sin clic:"), hoverCheck],
             [makeLabel("Completado IA (✦):"), enginePopup],
             [makeLabel("Modelo de Ollama:"), ollamaModelField]
         ])
@@ -130,7 +139,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         hint.font = NSFont.systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
 
-        let stack = NSStackView(views: [grid, hint])
+        // User dictionary: view and edit the learned words (one per line).
+        let dictLabel = makeLabel("Diccionario propio (una palabra por línea):")
+        dictLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+
+        let dictScroll = NSTextView.scrollableTextView()
+        dictionaryView = (dictScroll.documentView as! NSTextView)
+        dictionaryView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        dictScroll.translatesAutoresizingMaskIntoConstraints = false
+        dictScroll.heightAnchor.constraint(equalToConstant: 110).isActive = true
+        dictScroll.widthAnchor.constraint(equalToConstant: 400).isActive = true
+        dictScroll.borderType = .bezelBorder
+
+        let saveButton = NSButton(title: "Guardar diccionario", target: self,
+                                  action: #selector(saveDictionary))
+
+        let stack = NSStackView(views: [grid, hint, dictLabel, dictScroll, saveButton])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 18
@@ -173,6 +197,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc private func hoverGlideChanged(_ sender: NSButton) {
+        Settings.hoverGlide = sender.state == .on
+        onHoverGlideChange?(Settings.hoverGlide)
+    }
+
     @objc private func scaleChanged(_ sender: NSSlider) {
         let v = (sender.doubleValue * 20).rounded() / 20 // steps of 0.05
         Settings.scale = v
@@ -183,5 +212,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// Keep the popup in sync when the language is changed from the keyboard itself.
     func reflectLanguage(_ lang: Language) {
         languagePopup?.selectItem(at: lang == .spanish ? 0 : 1)
+    }
+
+    func setUserWords(_ words: [String]) {
+        dictionaryView?.string = words.joined(separator: "\n")
+    }
+
+    /// Keep the checkbox in sync when the mode is toggled from the keyboard.
+    func reflectHoverGlide(_ enabled: Bool) {
+        hoverCheck?.state = enabled ? .on : .off
+    }
+
+    @objc private func saveDictionary() {
+        let words = dictionaryView.string
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        onUserDictionaryChange?(words)
     }
 }

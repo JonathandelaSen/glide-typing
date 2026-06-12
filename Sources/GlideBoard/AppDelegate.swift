@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
     private var settingsController: SettingsWindowController?
+    private var debugController: DebugWindowController?
     private var toggleMenuItem: NSMenuItem?
 
     private var language: Language = Settings.language
@@ -73,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     private func buildPanel() {
         keyboardView = KeyboardView(language: language, scale: Settings.scale)
         keyboardView.delegate = self
+        keyboardView.hoverGlideEnabled = Settings.hoverGlide
 
         let size = keyboardView.frame.size
         panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
@@ -153,12 +155,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
 
     /// The model's context: the real focused-field text up to the caret when
     /// the app exposes it; otherwise our own transcript of what we typed.
-    private func completionContext() -> String {
+    private func completionContext() -> (text: String, source: String) {
         if let fieldText = FocusedFieldReader.textBeforeCursor(),
            !fieldText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return fieldText
+            return (fieldText, "campo (AX)")
         }
-        return recentText
+        return (recentText, "transcripción interna")
+    }
+
+    private func debugLog(_ message: String) {
+        debugController?.log(message)
     }
 
     /// Ask the model for a phrase completion. Pass a delay to debounce while
@@ -168,8 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         keyboardView.ghost = nil
         guard let provider = completionProvider else { return }
         let snapshot = recentText
-        let context = completionContext().trimmingCharacters(in: .whitespacesAndNewlines)
+        let (rawContext, source) = completionContext()
+        let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
         guard context.split(separator: " ").count >= 2 else { return }
+        debugLog("✦ FRASE — fuente: \(source)\ncontexto (\(context.count) car.):\n«\(context)»")
         completionTask = Task { [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -177,7 +185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             }
             let phrase = try? await provider.complete(context: context)
             await MainActor.run {
-                guard let self, self.recentText == snapshot,
+                guard let self else { return }
+                self.debugLog("✦ FRASE ← \(phrase.map { "«\($0)»" } ?? "(nada)")")
+                guard self.recentText == snapshot,
                       let phrase, !phrase.isEmpty else { return }
                 self.keyboardView.ghost = phrase
             }
@@ -211,13 +221,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             return
         }
         let partial = tapBuffer
-        let context = completionContext().trimmingCharacters(in: .whitespacesAndNewlines)
+        let (rawContext, source) = completionContext()
+        let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        debugLog("PALABRA '\(partial)' — fuente: \(source)\ncontexto (\(context.count) car.):\n«\(context)»")
         wordSuggestTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             if Task.isCancelled { return }
             let words = (try? await provider.suggestWords(context: context, partial: partial)) ?? []
             await MainActor.run {
                 guard let self else { return }
+                self.debugLog("PALABRA '\(partial)' ← \(words.isEmpty ? "(nada)" : words.joined(separator: ", "))")
                 // Don't require the text to be untouched — the suggestion is
                 // still valid if it extends whatever the word looks like NOW.
                 let current = self.tapBuffer
@@ -268,6 +281,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+        let debug = NSMenuItem(title: "Contexto del modelo (debug)…", action: #selector(openDebug), keyEquivalent: "")
+        debug.target = self
+        menu.addItem(debug)
         menu.addItem(.separator())
         let es = NSMenuItem(title: "Español", action: #selector(setSpanish), keyEquivalent: "")
         es.target = self
@@ -293,6 +309,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         settingsController?.reflectLanguage(lang)
     }
 
+    @objc private func openDebug() {
+        if debugController == nil {
+            debugController = DebugWindowController()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        debugController?.window?.makeKeyAndOrderFront(nil)
+    }
+
     // MARK: - Settings
 
     @objc private func openSettings() {
@@ -302,8 +326,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             controller.onLanguageChange = { [weak self] lang in self?.switchLanguage(lang) }
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
             controller.onCompletionEngineChange = { [weak self] in self?.applyCompletionEngine() }
+            controller.onHoverGlideChange = { [weak self] enabled in self?.keyboardView.hoverGlideEnabled = enabled }
+            controller.onUserDictionaryChange = { [weak self] words in
+                guard let self else { return }
+                self.userDictionary.replaceAll(words)
+                // Rebuild the lexicon so removals take effect immediately.
+                self.lexicon = Lexicon(languages: [.spanish, .english])
+                for word in self.userDictionary.words {
+                    self.lexicon.learn(word)
+                }
+            }
             settingsController = controller
         }
+        settingsController?.setUserWords(userDictionary.words)
         NSApp.activate(ignoringOtherApps: true)
         settingsController?.window?.makeKeyAndOrderFront(nil)
     }
@@ -505,28 +540,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             } else {
                 view.flash("✦?") // nothing to accept yet
             }
-        case .downRight:
+        }
+    }
+
+    func keyboardView(_ view: KeyboardView, didSetHoverGlide enabled: Bool) {
+        Settings.hoverGlide = enabled
+        settingsController?.reflectHoverGlide(enabled)
+    }
+
+    func keyboardView(_ view: KeyboardView, didEdit action: EditAction) {
+        switch action {
+        case .paste:
             view.flash("pegar")
             TextInjector.pressKey(TextInjector.vKey, flags: .maskCommand)
             lastInsertedWord = nil
-            lastOutputEndsInWordChar = true
-        case .upRight:
+            // Keep the transcript in sync: we know exactly what got pasted.
+            if let pasted = NSPasteboard.general.string(forType: .string) {
+                appendRecent(pasted)
+                lastOutputEndsInWordChar = pasted.last?.isLetter ?? false
+            } else {
+                lastOutputEndsInWordChar = true
+            }
+        case .selectAllCopy:
             view.flash("copiado")
-            TextInjector.pressKey(TextInjector.aKey, flags: .maskCommand)
-            TextInjector.pressKey(TextInjector.cKey, flags: .maskCommand)
-            // Collapse the selection so the next keystroke doesn't replace it.
-            TextInjector.pressKey(TextInjector.rightArrowKey)
-        case .upLeft:
+            // Spaced out: the target app must process each step before the
+            // next (select-all → copy → collapse selection).
+            TextInjector.pressSequence([
+                (TextInjector.aKey, .maskCommand),
+                (TextInjector.cKey, .maskCommand),
+                (TextInjector.rightArrowKey, [])
+            ])
+        case .deleteToEnd:
             view.flash("⌫ final")
-            // Select from cursor to end, then forward-delete (a no-op when
-            // nothing is selected, unlike backspace).
-            TextInjector.pressKey(TextInjector.downArrowKey, flags: [.maskCommand, .maskShift])
-            TextInjector.pressKey(TextInjector.forwardDeleteKey)
+            // Select to the end, then forward-delete (a no-op when nothing
+            // is selected, unlike backspace).
+            TextInjector.pressSequence([
+                (TextInjector.downArrowKey, [.maskCommand, .maskShift]),
+                (TextInjector.forwardDeleteKey, [])
+            ])
             lastInsertedWord = nil
-        case .downLeft:
+        case .deleteToStart:
+            view.flash("⌫ inicio")
+            TextInjector.pressSequence([
+                (TextInjector.upArrowKey, [.maskCommand, .maskShift]),
+                (TextInjector.forwardDeleteKey, [])
+            ])
+            lastInsertedWord = nil
+            lastOutputEndsInWordChar = false
+            // Everything before the cursor is gone — so is our transcript.
+            recentText = ""
+            contextWord = nil
+        case .deleteAll:
             view.flash("⌫ todo")
-            TextInjector.pressKey(TextInjector.aKey, flags: .maskCommand)
-            TextInjector.pressKey(TextInjector.forwardDeleteKey)
+            TextInjector.pressSequence([
+                (TextInjector.aKey, .maskCommand),
+                (TextInjector.forwardDeleteKey, [])
+            ])
             resetInsertionState()
             view.candidates = []
             view.predictions = []

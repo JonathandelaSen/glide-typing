@@ -138,6 +138,18 @@ final class UserDictionary {
     func add(_ word: String) {
         guard !words.contains(word) else { return }
         words.append(word)
+        save()
+    }
+
+    func replaceAll(_ newWords: [String]) {
+        var seen = Set<String>()
+        words = newWords
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        save()
+    }
+
+    private func save() {
         try? words.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 }
