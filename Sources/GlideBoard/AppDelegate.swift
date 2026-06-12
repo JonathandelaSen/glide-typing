@@ -1,7 +1,13 @@
 import AppKit
 import Carbon
 
-final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
+/// Borderless non-activating panel that can still take key status — needed so
+/// the composer text view can show a caret without activating the app.
+final class FloatingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, NSTextViewDelegate {
     private var panel: NSPanel!
     private var keyboardView: KeyboardView!
     private var statusItem: NSStatusItem!
@@ -29,9 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     private var recentText = ""
     /// Composer mode: text is composed in the panel and inserted on demand.
     private var composerEnabled = Settings.composerMode
-    private var composerText = "" {
-        didSet { keyboardView?.composerText = composerText }
-    }
+    /// The composer text view is the source of truth in composer mode.
+    private var composerText: String { keyboardView?.composerString ?? "" }
     private var completionProvider: CompletionProvider?
     private var completionTask: Task<Void, Never>?
     private var wordSuggestTask: Task<Void, Never>?
@@ -81,13 +86,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         keyboardView.delegate = self
         keyboardView.hoverGlideEnabled = Settings.hoverGlide
         keyboardView.composerEnabled = composerEnabled
-        keyboardView.composerText = composerText
+        keyboardView.composerView.delegate = self
 
         let size = keyboardView.frame.size
-        panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
-                        styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered,
-                        defer: false)
+        panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered,
+                              defer: false)
+        // Key status only when the composer text view is clicked — typing in
+        // the target app is unaffected until then.
+        panel.becomesKeyOnlyIfNeeded = true
         panel.level = .floating
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -153,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
 
     private func emitText(_ s: String) {
         if composerEnabled {
-            composerText += s
+            keyboardView.composerInsert(s)
         } else {
             TextInjector.type(s)
         }
@@ -162,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
 
     private func emitBackspace(_ count: Int = 1) {
         if composerEnabled {
-            composerText = String(composerText.dropLast(count))
+            keyboardView.composerDeleteBackward(count)
         } else {
             TextInjector.pressKey(TextInjector.backspaceKey, times: count)
         }
@@ -172,17 +180,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     /// Type the composer buffer into the focused app (optionally with Return).
     private func flushComposerToApp(pressReturn: Bool) {
         let text = composerText
-        composerText = ""
-        if !text.isEmpty {
-            TextInjector.type(text)
-        }
-        if pressReturn {
-            TextInjector.pressKey(TextInjector.returnKey)
-        }
+        keyboardView.composerClear()
         resetInsertionState()
         keyboardView.candidates = []
         keyboardView.predictions = []
         keyboardView.ghost = nil
+
+        let inject = {
+            if !text.isEmpty { TextInjector.type(text) }
+            if pressReturn { TextInjector.pressKey(TextInjector.returnKey) }
+        }
+        if panel.isKeyWindow {
+            // Hand key status back to the target app before injecting, or the
+            // synthetic keystrokes would land in our own panel.
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: inject)
+        } else {
+            inject()
+        }
     }
 
     /// Snapshot used to discard stale async results.
@@ -205,7 +221,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     /// the app exposes it; otherwise our own transcript of what we typed.
     private func completionContext() -> (text: String, source: String) {
         if composerEnabled {
-            return (composerText, "borrador")
+            // Up to the caret: editing mid-text completes from there.
+            return (keyboardView.composerTextBeforeCaret, "borrador")
         }
         if let fieldText = FocusedFieldReader.textBeforeCursor(),
            !fieldText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -252,6 +269,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             return
         }
         keyboardView.candidates = lexicon.completions(prefix: tapBuffer)
+    }
+
+    private func resetWordState() {
+        tapBuffer = ""
+        lastInsertedWord = nil
+    }
+
+    // MARK: - NSTextViewDelegate: the user edits the composer directly
+    // (clicking to move the caret, selecting, even typing with the physical
+    // keyboard — the panel takes key status without activating the app).
+
+    func textDidChange(_ notification: Notification) {
+        guard composerEnabled, !keyboardView.composerProgrammatic else { return }
+        keyboardView.composerContentChanged()
+        resetWordState()
+        lastOutputEndsInWordChar = keyboardView.composerTextBeforeCaret.last?.isLetter ?? false
+        keyboardView.candidates = []
+        keyboardView.predictions = []
+        requestCompletion(afterDelay: 0.5)
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        guard composerEnabled, !keyboardView.composerProgrammatic else { return }
+        resetWordState()
+        if !keyboardView.composerCaretAtEnd {
+            keyboardView.ghost = nil
+        }
     }
 
     /// A word was fully entered: learn the bigram, refresh the ghost completion.
@@ -579,14 +623,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection) {
         switch direction {
         case .right:
-            view.flash("␣")
-            keyboardView(view, didTap: Key(action: .space, label: "", unitFrame: .zero))
+            view.flash(".")
+            keyboardView(view, didTap: Key(action: .char("."), label: "", unitFrame: .zero))
         case .left:
             view.flash("⌫")
             keyboardView(view, didTap: Key(action: .backspace, label: "", unitFrame: .zero))
         case .down:
-            view.flash(".")
-            keyboardView(view, didTap: Key(action: .char("."), label: "", unitFrame: .zero))
+            view.flash("␣")
+            keyboardView(view, didTap: Key(action: .space, label: "", unitFrame: .zero))
         case .up:
             // Accept the first suggested word (dictionary row, then AI row).
             if !view.candidates.isEmpty {
@@ -636,10 +680,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(composerText, forType: .string)
             case .deleteToEnd:
-                view.flash("⌫ final") // caret is always at the end: nothing to do
-            case .deleteToStart, .deleteAll:
+                view.flash("⌫ final")
+                view.composerDeleteToEnd()
+            case .deleteToStart:
+                view.flash("⌫ inicio")
+                view.composerDeleteToStart()
+                resetWordState()
+            case .deleteAll:
                 view.flash("⌫ todo")
-                composerText = ""
+                view.composerClear()
                 resetInsertionState()
                 view.candidates = []
                 view.predictions = []

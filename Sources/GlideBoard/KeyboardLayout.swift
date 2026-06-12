@@ -41,7 +41,7 @@ enum Language: String {
 struct KeyboardLayout {
     let keys: [Key]
     let unitColumns: CGFloat = 10
-    let unitRows: CGFloat = 4
+    let unitRows: CGFloat = 5
 
     static func build(for language: Language) -> KeyboardLayout {
         var keys: [Key] = []
@@ -54,33 +54,34 @@ struct KeyboardLayout {
             }
         }
 
-        row("qwertyuiop", row: 0, offset: 0)
+        row("1234567890", row: 0, offset: 0)
+        row("qwertyuiop", row: 1, offset: 0)
         switch language {
         case .english:
-            row("asdfghjkl", row: 1, offset: 0.5)
+            row("asdfghjkl", row: 2, offset: 0.5)
         case .spanish:
-            row("asdfghjklñ", row: 1, offset: 0)
+            row("asdfghjklñ", row: 2, offset: 0)
         }
-        row("zxcvbnm", row: 2, offset: 1.0)
+        row("zxcvbnm", row: 3, offset: 1.0)
         keys.append(Key(action: .backspace, label: "⌫",
-                        unitFrame: CGRect(x: 8.25, y: 2, width: 1.75, height: 1)))
+                        unitFrame: CGRect(x: 8.25, y: 3, width: 1.75, height: 1)))
 
         keys.append(Key(action: .hide, label: "✕",
-                        unitFrame: CGRect(x: 0, y: 3, width: 1.0, height: 1)))
+                        unitFrame: CGRect(x: 0, y: 4, width: 1.0, height: 1)))
         keys.append(Key(action: .language, label: language.rawValue,
-                        unitFrame: CGRect(x: 1.0, y: 3, width: 1.0, height: 1)))
+                        unitFrame: CGRect(x: 1.0, y: 4, width: 1.0, height: 1)))
         keys.append(Key(action: .char(","), label: ",",
-                        unitFrame: CGRect(x: 2.0, y: 3, width: 0.8, height: 1)))
+                        unitFrame: CGRect(x: 2.0, y: 4, width: 0.8, height: 1)))
         keys.append(Key(action: .space, label: "espacio",
-                        unitFrame: CGRect(x: 2.8, y: 3, width: 3.4, height: 1)))
+                        unitFrame: CGRect(x: 2.8, y: 4, width: 3.4, height: 1)))
         keys.append(Key(action: .char("."), label: ".",
-                        unitFrame: CGRect(x: 6.2, y: 3, width: 0.8, height: 1)))
+                        unitFrame: CGRect(x: 6.2, y: 4, width: 0.8, height: 1)))
         keys.append(Key(action: .char("?"), label: "?",
-                        unitFrame: CGRect(x: 7.0, y: 3, width: 0.8, height: 1)))
+                        unitFrame: CGRect(x: 7.0, y: 4, width: 0.8, height: 1)))
         keys.append(Key(action: .char("!"), label: "!",
-                        unitFrame: CGRect(x: 7.8, y: 3, width: 0.8, height: 1)))
+                        unitFrame: CGRect(x: 7.8, y: 4, width: 0.8, height: 1)))
         keys.append(Key(action: .ret, label: "⏎",
-                        unitFrame: CGRect(x: 8.6, y: 3, width: 1.4, height: 1)))
+                        unitFrame: CGRect(x: 8.6, y: 4, width: 1.4, height: 1)))
 
         return KeyboardLayout(keys: keys)
     }

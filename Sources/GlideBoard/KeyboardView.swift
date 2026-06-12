@@ -74,17 +74,170 @@ final class KeyboardView: NSView {
     }
     /// AI phrase completion (ghost text), shown inline after the composer text.
     var ghost: String? {
-        didSet { updateComposerHeight(); needsDisplay = true }
+        didSet {
+            updateGhostLabel()
+            updateComposerHeight()
+            needsDisplay = true
+        }
     }
     /// Composer mode: text is composed here and inserted into the app on demand.
     var composerEnabled = true {
-        didSet { updateComposerHeight(); needsDisplay = true }
-    }
-    var composerText = "" {
-        didSet { updateComposerHeight(); needsDisplay = true }
+        didSet {
+            composerScroll?.isHidden = !composerEnabled
+            updateComposerHeight()
+            needsDisplay = true
+        }
     }
     /// Height of the top row — grows with the composer text (up to ~4 lines).
     private(set) var topRowHeight: CGFloat = KeyboardView.ghostHeight
+
+    // Real text view: caret, selection, scrolling, mid-text editing.
+    private(set) var composerView: NSTextView!
+    private var composerScroll: NSScrollView!
+    private var ghostLabel: NSTextField!
+    private(set) var composerProgrammatic = false
+
+    var composerString: String { composerView?.string ?? "" }
+
+    var composerCaretAtEnd: Bool {
+        guard let composerView else { return true }
+        let range = composerView.selectedRange()
+        return range.length == 0 && range.location == (composerView.string as NSString).length
+    }
+
+    var composerTextBeforeCaret: String {
+        guard let composerView else { return "" }
+        let ns = composerView.string as NSString
+        let loc = min(composerView.selectedRange().location, ns.length)
+        return ns.substring(to: loc)
+    }
+
+    func composerInsert(_ s: String) {
+        composerProgrammatic = true
+        composerView.insertText(s, replacementRange: composerView.selectedRange())
+        composerProgrammatic = false
+        composerContentChanged()
+    }
+
+    func composerDeleteBackward(_ count: Int) {
+        composerProgrammatic = true
+        for _ in 0..<count { composerView.deleteBackward(nil) }
+        composerProgrammatic = false
+        composerContentChanged()
+    }
+
+    func composerDeleteToStart() {
+        composerProgrammatic = true
+        let caret = composerView.selectedRange().location
+        composerView.insertText("", replacementRange: NSRange(location: 0, length: caret))
+        composerProgrammatic = false
+        composerContentChanged()
+    }
+
+    func composerDeleteToEnd() {
+        composerProgrammatic = true
+        let ns = composerView.string as NSString
+        let caret = composerView.selectedRange().location
+        composerView.insertText("", replacementRange: NSRange(location: caret, length: ns.length - caret))
+        composerProgrammatic = false
+        composerContentChanged()
+    }
+
+    func composerClear() {
+        composerProgrammatic = true
+        composerView.string = ""
+        composerProgrammatic = false
+        composerContentChanged()
+    }
+
+    func composerContentChanged() {
+        updateGhostLabel()
+        updateComposerHeight()
+        composerView.scrollRangeToVisible(composerView.selectedRange())
+        needsDisplay = true
+    }
+
+    private func setupComposer() {
+        composerView = NSTextView()
+        composerView.isRichText = false
+        composerView.font = NSFont.systemFont(ofSize: 14)
+        composerView.textColor = .white
+        composerView.drawsBackground = false
+        composerView.insertionPointColor = NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+        composerView.isVerticallyResizable = true
+        composerView.isHorizontallyResizable = false
+        composerView.autoresizingMask = [.width]
+        composerView.textContainerInset = NSSize(width: 4, height: 4)
+        composerView.allowsUndo = true
+        composerView.maxSize = NSSize(width: 10_000, height: 10_000)
+
+        composerScroll = NSScrollView()
+        composerScroll.drawsBackground = false
+        composerScroll.hasVerticalScroller = true
+        composerScroll.autohidesScrollers = true
+        composerScroll.documentView = composerView
+        addSubview(composerScroll)
+
+        ghostLabel = NSTextField(labelWithString: "")
+        let base = NSFont.systemFont(ofSize: 14)
+        ghostLabel.font = NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
+        ghostLabel.textColor = NSColor(calibratedWhite: 0.5, alpha: 1)
+        ghostLabel.isHidden = true
+        composerView.addSubview(ghostLabel)
+        ghostLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self,
+                                                                 action: #selector(ghostLabelClicked)))
+        layoutComposer()
+    }
+
+    @objc private func ghostLabelClicked() {
+        if let ghost { delegate?.keyboardView(self, didPickGhost: ghost) }
+    }
+
+    private func layoutComposer() {
+        guard composerScroll != nil, let rect = ghostRect else { return }
+        composerScroll.isHidden = !composerEnabled
+        let chip = insertChipRect
+        composerScroll.frame = CGRect(x: rect.minX + 4, y: rect.minY + 3,
+                                      width: (chip?.minX ?? rect.maxX) - rect.minX - 12,
+                                      height: rect.height - 6)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        layoutComposer()
+    }
+
+    /// Position the shaded AI continuation right after the last character,
+    /// wrapping to the next line when there's no room.
+    private func updateGhostLabel() {
+        guard composerEnabled, let ghost,
+              let lm = composerView.layoutManager, let tc = composerView.textContainer else {
+            ghostLabel?.isHidden = true
+            return
+        }
+        let glue = composerString.isEmpty || composerString.hasSuffix(" ") ? "" : " "
+        ghostLabel.stringValue = glue + ghost
+        ghostLabel.textColor = ghostSelected
+            ? NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+            : NSColor(calibratedWhite: 0.5, alpha: 1)
+        ghostLabel.sizeToFit()
+
+        lm.ensureLayout(for: tc)
+        let inset = composerView.textContainerInset
+        var origin = CGPoint(x: inset.width + 2, y: inset.height)
+        let ns = composerView.string as NSString
+        if ns.length > 0 {
+            let lastGlyph = lm.glyphIndexForCharacter(at: ns.length - 1)
+            let lineRect = lm.boundingRect(forGlyphRange: NSRange(location: lastGlyph, length: 1), in: tc)
+            origin = CGPoint(x: lineRect.maxX + inset.width + 2, y: lineRect.minY + inset.height)
+            let available = composerView.bounds.width - origin.x - 6
+            if available < min(ghostLabel.frame.width, 70) {
+                origin = CGPoint(x: inset.width + 2, y: lineRect.maxY + inset.height)
+            }
+        }
+        ghostLabel.frame.origin = origin
+        ghostLabel.isHidden = false
+    }
     private var lastPreviewTime: TimeInterval = 0
 
     // Gesture state
@@ -110,6 +263,7 @@ final class KeyboardView: NSView {
         let size = KeyboardView.preferredSize(for: self.layout, unit: self.unit)
         super.init(frame: NSRect(origin: .zero, size: size))
         wantsLayer = true
+        setupComposer()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -143,27 +297,25 @@ final class KeyboardView: NSView {
                        + KeyboardView.candidateHeight + layout.unitRows * unit + KeyboardView.margin)
     }
 
-    private func composerParagraph() -> NSMutableParagraphStyle {
-        let p = NSMutableParagraphStyle()
-        p.lineBreakMode = .byWordWrapping
-        return p
-    }
-
     private func updateComposerHeight() {
         // Never move the keys under the pointer mid-gesture.
         guard !tracking && !hoverTracing else { return }
         var target = KeyboardView.ghostHeight
-        if composerEnabled && (!composerText.isEmpty || ghost != nil) {
-            let chipWidth: CGFloat = 44
-            let width = bounds.width - KeyboardView.margin * 2 - 16 - chipWidth
-            let measured = composedString(paragraph: composerParagraph())
-                .boundingRect(with: NSSize(width: width, height: 1000),
-                              options: [.usesLineFragmentOrigin, .usesFontLeading]).height
-            target = min(max(KeyboardView.ghostHeight, measured + 16), 96)
+        if composerEnabled, let lm = composerView?.layoutManager, let tc = composerView?.textContainer {
+            lm.ensureLayout(for: tc)
+            var contentHeight = lm.usedRect(for: tc).height
+            if ghostLabel?.isHidden == false {
+                contentHeight = max(contentHeight,
+                                    ghostLabel.frame.maxY - composerView.textContainerInset.height)
+            }
+            target = min(max(KeyboardView.ghostHeight, contentHeight + 18), 100)
         }
         if abs(target - topRowHeight) > 0.5 {
             topRowHeight = target
+            layoutComposer()
             delegate?.keyboardViewDidResize(self)
+        } else {
+            layoutComposer()
         }
     }
 
@@ -554,6 +706,7 @@ final class KeyboardView: NSView {
         hoverCandidateIndex = selRow == 0 ? selIndex : nil
         selectedPredictionIndex = selRow == 1 ? selIndex : nil
         ghostSelected = selRow == 2
+        updateGhostLabel() // tint the inline ghost when selected
         needsDisplay = true
     }
 
@@ -563,6 +716,7 @@ final class KeyboardView: NSView {
         hoverCandidateIndex = nil
         selectedPredictionIndex = nil
         ghostSelected = false
+        updateGhostLabel()
         needsDisplay = true
     }
 
@@ -788,10 +942,10 @@ final class KeyboardView: NSView {
         let rx = area.width * 0.30
         let ry = area.height * 0.26
         let items: [(arrow: String, label: String, dx: CGFloat, dy: CGFloat)] = [
-            ("→", "espacio", 1, 0),
+            ("→", "punto", 1, 0),
             ("←", "borrar", -1, 0),
             ("↑", "elegir sugerencia (sin soltar)", 0, -1),
-            ("↓", "punto", 0, 1)
+            ("↓", "espacio", 0, 1)
         ]
 
         // Center pad
@@ -919,18 +1073,15 @@ final class KeyboardView: NSView {
                               width: (chip?.minX ?? rect.maxX) - rect.minX - 16,
                               height: rect.height)
 
-        let composed = composedString(paragraph: composerParagraph())
-        let measured = composed.boundingRect(with: NSSize(width: textArea.width, height: 1000),
-                                             options: [.usesLineFragmentOrigin, .usesFontLeading]).height
-        // Anchor to the bottom when the text overflows: the end is always visible.
-        let y = measured > textArea.height - 10
-            ? rect.maxY - measured - 7
-            : rect.midY - measured / 2
-        NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6).addClip()
-        composed.draw(with: CGRect(x: textArea.minX, y: y, width: textArea.width, height: measured),
-                      options: [.usesLineFragmentOrigin, .usesFontLeading])
-        NSGraphicsContext.restoreGraphicsState()
+        // The text itself lives in the embedded NSTextView; draw only the
+        // placeholder when everything is empty.
+        if composerString.isEmpty && ghost == nil {
+            let placeholder = NSAttributedString(string: "escribe aquí…", attributes: [
+                .font: NSFont.systemFont(ofSize: 14),
+                .foregroundColor: NSColor(calibratedWhite: 0.4, alpha: 1)
+            ])
+            placeholder.draw(at: CGPoint(x: textArea.minX + 2, y: rect.midY - placeholder.size().height / 2))
+        }
 
         if let chip {
             NSColor(calibratedRed: 0.18, green: 0.42, blue: 0.95, alpha: 0.5).setFill()
@@ -944,41 +1095,11 @@ final class KeyboardView: NSView {
         }
     }
 
-    /// Composer text + inline ghost (or the placeholder) as one styled string.
-    private func composedString(paragraph: NSParagraphStyle) -> NSAttributedString {
-        let composed = NSMutableAttributedString()
-        if composerText.isEmpty && ghost == nil {
-            composed.append(NSAttributedString(string: "escribe aquí…", attributes: [
-                .font: NSFont.systemFont(ofSize: 14),
-                .foregroundColor: NSColor(calibratedWhite: 0.4, alpha: 1),
-                .paragraphStyle: paragraph
-            ]))
-            return composed
-        }
-        composed.append(NSAttributedString(string: composerText, attributes: [
-            .font: NSFont.systemFont(ofSize: 14),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph
-        ]))
-        if let ghost {
-            let base = NSFont.systemFont(ofSize: 14)
-            let italic = NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
-            let glue = composerText.isEmpty || composerText.hasSuffix(" ") ? "" : " "
-            composed.append(NSAttributedString(string: glue + ghost, attributes: [
-                .font: italic,
-                .foregroundColor: ghostSelected
-                    ? NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
-                    : NSColor(calibratedWhite: 0.5, alpha: 1),
-                .paragraphStyle: paragraph
-            ]))
-        }
-        return composed
-    }
-
     private func drawKey(_ key: Key, highlighted: Bool) {
         let rect = pixelFrame(for: key)
-        let punctuation: [KeyAction] = [.char(","), .char("."), .char("?"), .char("!")]
-        let isSpecial = !key.isLetter && !punctuation.contains(key.action)
+        // Character keys (letters, digits, punctuation) share the light style.
+        let isSpecial: Bool
+        if case .char = key.action { isSpecial = false } else { isSpecial = true }
         var fill = isSpecial
             ? NSColor(calibratedWhite: 0.22, alpha: 1)
             : NSColor(calibratedWhite: 0.30, alpha: 1)
