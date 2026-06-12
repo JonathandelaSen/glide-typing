@@ -6,6 +6,23 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardView(_ view: KeyboardView, didUpdateGlide points: [CGPoint])
     func keyboardView(_ view: KeyboardView, didPickCandidate index: Int)
     func keyboardView(_ view: KeyboardView, didPickPrediction index: Int)
+    func keyboardView(_ view: KeyboardView, didPickGhost text: String)
+    /// A glide ended on top of a candidate in the suggestion row.
+    func keyboardView(_ view: KeyboardView, didGlideSelect index: Int)
+    /// A two-finger swipe shortcut over the keyboard.
+    func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection)
+}
+
+/// Two-finger swipe directions and their shortcut actions.
+enum FlickDirection {
+    case left       // delete word / character
+    case right      // space
+    case up         // accept the AI phrase completion
+    case down       // period
+    case upLeft     // delete from cursor to end
+    case upRight    // select all + copy
+    case downLeft   // delete everything
+    case downRight  // paste
 }
 
 final class KeyboardView: NSView {
@@ -16,6 +33,7 @@ final class KeyboardView: NSView {
     let unit: CGFloat
     static let margin: CGFloat = 10
     static let handleHeight: CGFloat = 16
+    static let ghostHeight: CGFloat = 32
     static let predictionHeight: CGFloat = 30
     static let candidateHeight: CGFloat = 36
     private let keyGap: CGFloat = 5
@@ -31,6 +49,10 @@ final class KeyboardView: NSView {
     var predictions: [String] = [] {
         didSet { needsDisplay = true }
     }
+    /// AI phrase completion (ghost text), shown first in the prediction row.
+    var ghost: String? {
+        didSet { needsDisplay = true }
+    }
     private var lastPreviewTime: TimeInterval = 0
 
     // Gesture state
@@ -38,6 +60,14 @@ final class KeyboardView: NSView {
     private var tracking = false
     private var pressedKeyIndex: Int?
     private var hoverKeyIndex: Int?
+    /// Candidate hovered while dragging a glide up into the suggestion row.
+    private var hoverCandidateIndex: Int?
+    /// Help legend overlay toggled by the "?" button.
+    private var showHelp = false
+
+    private var helpButtonRect: CGRect {
+        CGRect(x: bounds.width - 26, y: 3, width: 16, height: 16)
+    }
 
     override var isFlipped: Bool { true }
 
@@ -54,7 +84,8 @@ final class KeyboardView: NSView {
 
     static func preferredSize(for layout: KeyboardLayout, unit: CGFloat) -> NSSize {
         NSSize(width: layout.unitColumns * unit + margin * 2,
-               height: handleHeight + predictionHeight + candidateHeight + layout.unitRows * unit + margin)
+               height: handleHeight + ghostHeight + predictionHeight + candidateHeight
+                       + layout.unitRows * unit + margin)
     }
 
     func setLanguage(_ lang: Language) {
@@ -62,13 +93,15 @@ final class KeyboardView: NSView {
         layout = KeyboardLayout.build(for: lang)
         candidates = []
         predictions = []
+        ghost = nil
         needsDisplay = true
     }
 
     // MARK: - Geometry helpers
 
     private var keysOriginY: CGFloat {
-        KeyboardView.handleHeight + KeyboardView.predictionHeight + KeyboardView.candidateHeight
+        KeyboardView.handleHeight + KeyboardView.ghostHeight
+            + KeyboardView.predictionHeight + KeyboardView.candidateHeight
     }
 
     func pixelFrame(for key: Key) -> CGRect {
@@ -108,15 +141,25 @@ final class KeyboardView: NSView {
         }
     }
 
+    /// Full-width click target for the AI phrase completion.
+    private var ghostRect: CGRect? {
+        guard ghost != nil else { return nil }
+        return CGRect(x: KeyboardView.margin,
+                      y: KeyboardView.handleHeight + 2,
+                      width: bounds.width - KeyboardView.margin * 2,
+                      height: KeyboardView.ghostHeight - 4)
+    }
+
     private var predictionRects: [CGRect] {
         rowRects(count: predictions.count,
-                 y: KeyboardView.handleHeight + 1,
+                 y: KeyboardView.handleHeight + KeyboardView.ghostHeight + 1,
                  height: KeyboardView.predictionHeight - 2)
     }
 
     private var candidateRects: [CGRect] {
         rowRects(count: candidates.count,
-                 y: KeyboardView.handleHeight + KeyboardView.predictionHeight + 2,
+                 y: KeyboardView.handleHeight + KeyboardView.ghostHeight
+                    + KeyboardView.predictionHeight + 2,
                  height: KeyboardView.candidateHeight - 6)
     }
 
@@ -125,13 +168,29 @@ final class KeyboardView: NSView {
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
 
+        // Help legend: the "?" button toggles it; any click closes it.
+        if showHelp {
+            showHelp = false
+            needsDisplay = true
+            return
+        }
+        if helpButtonRect.insetBy(dx: -4, dy: -4).contains(p) {
+            showHelp = true
+            needsDisplay = true
+            return
+        }
+
         // Drag handle strip moves the window.
         if p.y < KeyboardView.handleHeight {
             window?.performDrag(with: event)
             return
         }
 
-        // Prediction row (phrase continuation), then candidate row.
+        // Ghost row, then prediction row, then candidate row.
+        if let ghost, let rect = ghostRect, rect.contains(p) {
+            delegate?.keyboardView(self, didPickGhost: ghost)
+            return
+        }
         for (i, rect) in predictionRects.enumerated() where rect.contains(p) {
             delegate?.keyboardView(self, didPickPrediction: i)
             return
@@ -151,6 +210,17 @@ final class KeyboardView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard tracking else { return }
         let p = convert(event.locationInWindow, from: nil)
+
+        if p.y < keysOriginY {
+            // Pointer is up in the suggestion rows: freeze the trace and
+            // highlight the candidate under the pointer for drag-to-select.
+            hoverKeyIndex = nil
+            hoverCandidateIndex = candidateRects.firstIndex { $0.insetBy(dx: 0, dy: -4).contains(p) }
+            needsDisplay = true
+            return
+        }
+
+        hoverCandidateIndex = nil
         tracePoints.append(p)
         hoverKeyIndex = keyIndex(at: p)
 
@@ -171,7 +241,14 @@ final class KeyboardView: NSView {
             tracePoints = []
             pressedKeyIndex = nil
             hoverKeyIndex = nil
+            hoverCandidateIndex = nil
             needsDisplay = true
+        }
+
+        // Released on top of a suggestion: that word wins over the decoder.
+        if let idx = hoverCandidateIndex, idx < candidates.count {
+            delegate?.keyboardView(self, didGlideSelect: idx)
+            return
         }
 
         let pathLen = GestureDecoder.pathLength(tracePoints)
@@ -184,6 +261,88 @@ final class KeyboardView: NSView {
         } else if let idx = pressedKeyIndex, layout.keys[idx].isLetter {
             delegate?.keyboardView(self, didGlide: tracePoints)
         }
+    }
+
+    // MARK: - Two-finger swipes (trackpad) — gesture shortcuts
+
+    private var swipeAccum = CGVector.zero
+    private var swipeActive = false
+
+    override func scrollWheel(with event: NSEvent) {
+        // Normalize deltas to finger direction regardless of "natural scrolling".
+        let factor: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
+        if event.phase == .began {
+            swipeAccum = .zero
+            swipeActive = true
+        }
+        if swipeActive, event.phase == .changed {
+            swipeAccum.dx += event.scrollingDeltaX * factor
+            swipeAccum.dy += event.scrollingDeltaY * factor
+        }
+        if event.phase == .ended {
+            swipeActive = false
+            classifySwipe(swipeAccum)
+        }
+        // Legacy mouse wheel (no gesture phases): each notch is a vertical swipe.
+        if event.phase == [] && event.momentumPhase == [] {
+            classifySwipe(CGVector(dx: 0, dy: event.scrollingDeltaY * factor * 12))
+        }
+    }
+
+    private func classifySwipe(_ v: CGVector) {
+        guard hypot(v.dx, v.dy) > 24 else { return }
+        // Vertical axis empirically calibrated: scroll deltas report the
+        // opposite sign of the finger motion on this setup.
+        let fingerY = -v.dy
+        // Cardinal directions only — the dominant axis wins, no dead zones.
+        let direction: FlickDirection = abs(v.dx) > abs(fingerY)
+            ? (v.dx > 0 ? .right : .left)
+            : (fingerY > 0 ? .up : .down)
+        delegate?.keyboardView(self, didFlick: direction)
+    }
+
+    // MARK: - Right-click menu: editing actions
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        let actions: [(title: String, direction: FlickDirection)] = [
+            ("Pegar", .downRight),
+            ("Seleccionar todo y copiar", .upRight),
+            ("Borrar hasta el final", .upLeft),
+            ("Borrar todo", .downLeft)
+        ]
+        for (i, action) in actions.enumerated() {
+            let item = NSMenuItem(title: action.title, action: #selector(menuAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = i
+            menu.addItem(item)
+            if i == 1 { menu.addItem(.separator()) }
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func menuAction(_ sender: NSMenuItem) {
+        let directions: [FlickDirection] = [.downRight, .upRight, .upLeft, .downLeft]
+        guard sender.tag < directions.count else { return }
+        delegate?.keyboardView(self, didFlick: directions[sender.tag])
+    }
+
+    // MARK: - Gesture feedback flash
+
+    private var flashSymbol: String?
+    private var flashClearWork: DispatchWorkItem?
+
+    /// Briefly flash a big symbol over the keys to confirm a gesture fired.
+    func flash(_ symbol: String) {
+        flashSymbol = symbol
+        needsDisplay = true
+        flashClearWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flashSymbol = nil
+            self?.needsDisplay = true
+        }
+        flashClearWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
     }
 
     // MARK: - Drawing
@@ -207,12 +366,113 @@ final class KeyboardView: NSView {
         }
 
         drawTrace()
+
+        if let flashSymbol {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: flashSymbol.count > 2 ? 30 : 52, weight: .bold),
+                .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 0.85)
+            ]
+            let s = NSAttributedString(string: flashSymbol, attributes: attrs)
+            let size = s.size()
+            let keysMidY = keysOriginY + (bounds.height - keysOriginY) / 2
+            s.draw(at: CGPoint(x: bounds.midX - size.width / 2, y: keysMidY - size.height / 2))
+        }
+
+        drawHelpButton()
+        if showHelp { drawHelpOverlay() }
+    }
+
+    private func drawHelpButton() {
+        let rect = helpButtonRect
+        NSColor(calibratedWhite: showHelp ? 0.55 : 0.35, alpha: 1).setStroke()
+        let circle = NSBezierPath(ovalIn: rect)
+        circle.lineWidth = 1.2
+        circle.stroke()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor(calibratedWhite: showHelp ? 0.8 : 0.5, alpha: 1)
+        ]
+        let s = NSAttributedString(string: "?", attributes: attrs)
+        let size = s.size()
+        s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+    }
+
+    private func drawHelpOverlay() {
+        let area = CGRect(x: KeyboardView.margin, y: KeyboardView.handleHeight + 2,
+                          width: bounds.width - KeyboardView.margin * 2,
+                          height: bounds.height - KeyboardView.handleHeight - KeyboardView.margin)
+        NSColor(calibratedWhite: 0.1, alpha: 0.96).setFill()
+        NSBezierPath(roundedRect: area, xRadius: 12, yRadius: 12).fill()
+
+        // Title
+        let title = NSAttributedString(string: "Acciones rápidas — desliza 2 dedos",
+                                       attributes: [
+                                           .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                                           .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+                                       ])
+        title.draw(at: CGPoint(x: area.midX - title.size().width / 2, y: area.minY + 10))
+
+        // Compass: the four swipe directions around a center dot.
+        // Screen coords (flipped view): -y is up.
+        let center = CGPoint(x: area.midX, y: area.midY - 4)
+        let rx = area.width * 0.30
+        let ry = area.height * 0.26
+        let items: [(arrow: String, label: String, dx: CGFloat, dy: CGFloat)] = [
+            ("→", "espacio", 1, 0),
+            ("←", "borrar", -1, 0),
+            ("↑", "aceptar ✦", 0, -1),
+            ("↓", "punto", 0, 1)
+        ]
+
+        // Center pad
+        NSColor(calibratedWhite: 0.3, alpha: 1).setFill()
+        NSBezierPath(ovalIn: CGRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14)).fill()
+
+        for item in items {
+            let pos = CGPoint(x: center.x + item.dx * rx, y: center.y + item.dy * ry)
+            let arrow = NSAttributedString(string: item.arrow, attributes: [
+                .font: NSFont.systemFont(ofSize: 26, weight: .bold),
+                .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+            ])
+            let aSize = arrow.size()
+            arrow.draw(at: CGPoint(x: pos.x - aSize.width / 2, y: pos.y - aSize.height / 2 - 9))
+
+            let label = NSAttributedString(string: item.label, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor(calibratedWhite: 0.85, alpha: 1)
+            ])
+            let lSize = label.size()
+            label.draw(at: CGPoint(x: pos.x - lSize.width / 2, y: pos.y + 9))
+        }
+
+        // Right-click hint at the bottom.
+        let hint = NSAttributedString(string: "clic derecho: pegar · copiar todo · borrar hasta el final · borrar todo",
+                                      attributes: [
+                                          .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                                          .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)
+                                      ])
+        hint.draw(at: CGPoint(x: area.midX - hint.size().width / 2, y: area.maxY - 24))
     }
 
     private func drawCandidates() {
-        // Next-word predictions: italic, gray, their own row at the top.
+        // Ghost row: the AI phrase completion as a full-width chip.
         let base = NSFont.systemFont(ofSize: 13, weight: .regular)
         let italic = NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
+        if let ghost, let rect = ghostRect {
+            NSColor(calibratedRed: 0.35, green: 0.6, blue: 1.0, alpha: 0.18).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).fill()
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 14, weight: .regular),
+                .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+            ]
+            let s = NSAttributedString(string: "✦ " + ghost, attributes: attrs)
+            var size = s.size()
+            size.width = min(size.width, rect.width - 16)
+            s.draw(in: CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2,
+                              width: size.width, height: size.height))
+        }
+
+        // Prediction row: bigram next words, italic gray.
         for (i, rect) in predictionRects.enumerated() {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: italic,
@@ -229,20 +489,24 @@ final class KeyboardView: NSView {
         if !predictions.isEmpty || !candidates.isEmpty {
             NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
             NSRect(x: KeyboardView.margin,
-                   y: KeyboardView.handleHeight + KeyboardView.predictionHeight,
+                   y: KeyboardView.handleHeight + KeyboardView.ghostHeight + KeyboardView.predictionHeight,
                    width: bounds.width - KeyboardView.margin * 2, height: 1).fill()
         }
 
         // Alternatives for the last word: bigger, first one highlighted.
         let font = NSFont.systemFont(ofSize: 15, weight: .medium)
         for (i, rect) in candidateRects.enumerated() {
-            if i == 0 {
+            if i == hoverCandidateIndex {
+                NSColor(calibratedRed: 0.25, green: 0.5, blue: 1.0, alpha: 0.8).setFill()
+                NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 0), xRadius: 8, yRadius: 8).fill()
+            } else if i == 0 {
                 NSColor(calibratedRed: 0.18, green: 0.42, blue: 0.95, alpha: 0.35).setFill()
                 NSBezierPath(roundedRect: rect.insetBy(dx: 3, dy: 0), xRadius: 8, yRadius: 8).fill()
             }
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: i == 0 ? NSColor.white : NSColor(calibratedWhite: 0.8, alpha: 1)
+                .foregroundColor: i == 0 || i == hoverCandidateIndex
+                    ? NSColor.white : NSColor(calibratedWhite: 0.8, alpha: 1)
             ]
             let s = NSAttributedString(string: candidates[i], attributes: attrs)
             let size = s.size()
@@ -256,7 +520,8 @@ final class KeyboardView: NSView {
 
     private func drawKey(_ key: Key, highlighted: Bool) {
         let rect = pixelFrame(for: key)
-        let isSpecial = !key.isLetter && key.action != .char(",") && key.action != .char(".")
+        let punctuation: [KeyAction] = [.char(","), .char("."), .char("?"), .char("!")]
+        let isSpecial = !key.isLetter && !punctuation.contains(key.action)
         var fill = isSpecial
             ? NSColor(calibratedWhite: 0.22, alpha: 1)
             : NSColor(calibratedWhite: 0.30, alpha: 1)

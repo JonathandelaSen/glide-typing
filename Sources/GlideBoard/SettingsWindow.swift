@@ -57,9 +57,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
+    var onCompletionEngineChange: (() -> Void)?
 
     private var scaleLabel: NSTextField!
     private var languagePopup: NSPopUpButton!
+    private var enginePopup: NSPopUpButton!
+    private var ollamaModelField: NSTextField!
 
     init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 200),
@@ -97,10 +100,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         scaleLabel = makeLabel(scaleText(Settings.scale))
 
+        enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        enginePopup.addItems(withTitles: ["Apple (sistema)", "Ollama (localhost)", "Desactivado"])
+        let engineIndex = ["system": 0, "ollama": 1, "off": 2][Settings.completionEngine] ?? 0
+        enginePopup.selectItem(at: engineIndex)
+        enginePopup.target = self
+        enginePopup.action = #selector(engineChanged)
+
+        ollamaModelField = NSTextField(string: Settings.ollamaModel)
+        ollamaModelField.placeholderString = "p. ej. qwen3.5:4b"
+        ollamaModelField.target = self
+        ollamaModelField.action = #selector(ollamaModelChanged)
+        ollamaModelField.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        ollamaModelField.isEnabled = Settings.completionEngine == "ollama"
+
         let grid = NSGridView(views: [
             [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
             [makeLabel("Idioma:"), languagePopup],
-            [makeLabel("Tamaño del teclado:"), slider, scaleLabel]
+            [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
+            [makeLabel("Completado IA (✦):"), enginePopup],
+            [makeLabel("Modelo de Ollama:"), ollamaModelField]
         ])
         grid.rowSpacing = 14
         grid.columnSpacing = 12
@@ -137,6 +156,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let lang: Language = languagePopup.indexOfSelectedItem == 0 ? .spanish : .english
         Settings.language = lang
         onLanguageChange?(lang)
+    }
+
+    @objc private func engineChanged() {
+        let engines = ["system", "ollama", "off"]
+        Settings.completionEngine = engines[enginePopup.indexOfSelectedItem]
+        ollamaModelField.isEnabled = Settings.completionEngine == "ollama"
+        onCompletionEngineChange?()
+    }
+
+    @objc private func ollamaModelChanged() {
+        let name = ollamaModelField.stringValue.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty {
+            Settings.ollamaModel = name
+            onCompletionEngineChange?()
+        }
     }
 
     @objc private func scaleChanged(_ sender: NSSlider) {

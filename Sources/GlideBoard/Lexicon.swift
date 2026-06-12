@@ -1,39 +1,86 @@
 import Foundation
 
-/// A word list ordered by frequency (rank 0 = most frequent).
+/// Word list for gesture decoding and autocompletion. Loads one or more
+/// language files (bilingual decoding) plus user-learned words.
 final class Lexicon {
     struct Entry {
         let word: String
         /// Letters with accents stripped, consecutive duplicates removed —
         /// the sequence of distinct keys a glide must pass through.
         let keySequence: [Character]
+        /// Accent-stripped word (not deduped) — for prefix autocompletion.
+        let normalized: String
         let rank: Int
     }
+
+    /// Rank given to user-learned words: high priority without beating
+    /// the language's most frequent words.
+    static let userWordRank = 50
 
     private(set) var entries: [Entry] = []
     /// Entries indexed by (firstKey, lastKey) for fast candidate pruning.
     private(set) var byEnds: [String: [Entry]] = [:]
     /// Entries indexed by first key — for partial (in-progress) decoding.
     private(set) var byFirst: [Character: [Entry]] = [:]
+    private var known = Set<String>()
 
-    init(language: Language) {
-        guard let url = Lexicon.locateWordFile(language.wordFile),
+    init(languages: [Language]) {
+        for language in languages {
+            loadFile(language.wordFile)
+        }
+    }
+
+    func contains(_ word: String) -> Bool {
+        known.contains(word.lowercased())
+    }
+
+    /// Add a user word with high priority — it becomes glidable and completable.
+    @discardableResult
+    func learn(_ word: String) -> Bool {
+        let w = word.lowercased()
+        guard w.count >= 3, !known.contains(w), w.allSatisfy({ $0.isLetter }) else { return false }
+        let keys = Lexicon.keySequence(for: w)
+        guard keys.count >= 2 else { return false }
+        let entry = Entry(word: w, keySequence: keys,
+                          normalized: String(w.map(Lexicon.baseKey)),
+                          rank: Lexicon.userWordRank)
+        entries.insert(entry, at: min(Lexicon.userWordRank, entries.count))
+        byEnds["\(keys.first!)\(keys.last!)", default: []].append(entry)
+        byFirst[keys.first!, default: []].append(entry)
+        known.insert(w)
+        return true
+    }
+
+    /// Best words starting with the given (possibly accentless) prefix,
+    /// ranked across all loaded languages and user words.
+    func completions(prefix: String, limit: Int = 4) -> [String] {
+        guard !prefix.isEmpty else { return [] }
+        let norm = String(prefix.lowercased().map(Lexicon.baseKey))
+        var matches: [Entry] = []
+        for entry in entries where entry.normalized.hasPrefix(norm) && entry.word.count > prefix.count {
+            matches.append(entry)
+            if matches.count >= 400 { break }
+        }
+        return matches.sorted { $0.rank < $1.rank }.prefix(limit).map { $0.word }
+    }
+
+    private func loadFile(_ name: String) {
+        guard let url = Lexicon.locateWordFile(name),
               let raw = try? String(contentsOf: url, encoding: .utf8) else {
-            NSLog("GlideBoard: could not load word list for \(language.rawValue)")
+            NSLog("GlideBoard: could not load word list '\(name)'")
             return
         }
-        var seen = Set<String>()
         var rank = 0
         for line in raw.split(separator: "\n") {
             let word = line.trimmingCharacters(in: .whitespaces).lowercased()
-            guard word.count >= 2, !seen.contains(word) else { continue }
-            seen.insert(word)
+            guard word.count >= 2, !known.contains(word) else { continue }
+            known.insert(word)
             let keys = Lexicon.keySequence(for: word)
             guard keys.count >= 2 else { rank += 1; continue } // single-key words are tapped, not glided
-            let entry = Entry(word: word, keySequence: keys, rank: rank)
+            let entry = Entry(word: word, keySequence: keys,
+                              normalized: String(word.map(Lexicon.baseKey)), rank: rank)
             entries.append(entry)
-            let bucket = "\(keys.first!)\(keys.last!)"
-            byEnds[bucket, default: []].append(entry)
+            byEnds["\(keys.first!)\(keys.last!)", default: []].append(entry)
             byFirst[keys.first!, default: []].append(entry)
             rank += 1
         }
@@ -70,5 +117,27 @@ final class Lexicon {
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         candidates.append(cwd.appendingPathComponent("Resources/\(name).txt"))
         return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+}
+
+/// Persists user-learned words across launches.
+final class UserDictionary {
+    private let url: URL
+    private(set) var words: [String] = []
+
+    init() {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GlideBoard", isDirectory: true)
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        url = support.appendingPathComponent("user_words.txt")
+        if let raw = try? String(contentsOf: url, encoding: .utf8) {
+            words = raw.split(separator: "\n").map(String.init)
+        }
+    }
+
+    func add(_ word: String) {
+        guard !words.contains(word) else { return }
+        words.append(word)
+        try? words.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 }

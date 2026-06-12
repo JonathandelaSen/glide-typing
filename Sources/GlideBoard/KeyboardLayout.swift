@@ -66,17 +66,21 @@ struct KeyboardLayout {
                         unitFrame: CGRect(x: 8.25, y: 2, width: 1.75, height: 1)))
 
         keys.append(Key(action: .hide, label: "✕",
-                        unitFrame: CGRect(x: 0, y: 3, width: 1.1, height: 1)))
+                        unitFrame: CGRect(x: 0, y: 3, width: 1.0, height: 1)))
         keys.append(Key(action: .language, label: language.rawValue,
-                        unitFrame: CGRect(x: 1.1, y: 3, width: 1.1, height: 1)))
+                        unitFrame: CGRect(x: 1.0, y: 3, width: 1.0, height: 1)))
         keys.append(Key(action: .char(","), label: ",",
-                        unitFrame: CGRect(x: 2.2, y: 3, width: 0.9, height: 1)))
+                        unitFrame: CGRect(x: 2.0, y: 3, width: 0.8, height: 1)))
         keys.append(Key(action: .space, label: "espacio",
-                        unitFrame: CGRect(x: 3.1, y: 3, width: 4.0, height: 1)))
+                        unitFrame: CGRect(x: 2.8, y: 3, width: 3.4, height: 1)))
         keys.append(Key(action: .char("."), label: ".",
-                        unitFrame: CGRect(x: 7.1, y: 3, width: 0.9, height: 1)))
+                        unitFrame: CGRect(x: 6.2, y: 3, width: 0.8, height: 1)))
+        keys.append(Key(action: .char("?"), label: "?",
+                        unitFrame: CGRect(x: 7.0, y: 3, width: 0.8, height: 1)))
+        keys.append(Key(action: .char("!"), label: "!",
+                        unitFrame: CGRect(x: 7.8, y: 3, width: 0.8, height: 1)))
         keys.append(Key(action: .ret, label: "⏎",
-                        unitFrame: CGRect(x: 8.0, y: 3, width: 2.0, height: 1)))
+                        unitFrame: CGRect(x: 8.6, y: 3, width: 1.4, height: 1)))
 
         return KeyboardLayout(keys: keys)
     }

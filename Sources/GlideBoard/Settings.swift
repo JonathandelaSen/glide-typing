@@ -20,6 +20,17 @@ enum Settings {
         set { defaults.set(newValue.rawValue, forKey: "language") }
     }
 
+    /// AI phrase-completion engine: "system" (Apple), "ollama", or "off".
+    static var completionEngine: String {
+        get { defaults.string(forKey: "completionEngine") ?? "system" }
+        set { defaults.set(newValue, forKey: "completionEngine") }
+    }
+
+    static var ollamaModel: String {
+        get { defaults.string(forKey: "ollamaModel") ?? "qwen3.5:4b" }
+        set { defaults.set(newValue, forKey: "ollamaModel") }
+    }
+
     /// Keyboard size multiplier.
     static var scale: Double {
         get {
