@@ -27,6 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     private var tapBuffer = ""
     /// Rolling transcript of what we've injected — context for AI completion.
     private var recentText = ""
+    /// Composer mode: text is composed in the panel and inserted on demand.
+    private var composerEnabled = Settings.composerMode
+    private var composerText = "" {
+        didSet { keyboardView?.composerText = composerText }
+    }
     private var completionProvider: CompletionProvider?
     private var completionTask: Task<Void, Never>?
     private var wordSuggestTask: Task<Void, Never>?
@@ -75,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         keyboardView = KeyboardView(language: language, scale: Settings.scale)
         keyboardView.delegate = self
         keyboardView.hoverGlideEnabled = Settings.hoverGlide
+        keyboardView.composerEnabled = composerEnabled
+        keyboardView.composerText = composerText
 
         let size = keyboardView.frame.size
         panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
@@ -142,6 +149,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         }
     }
 
+    // MARK: - Output sink: composer buffer or direct injection
+
+    private func emitText(_ s: String) {
+        if composerEnabled {
+            composerText += s
+        } else {
+            TextInjector.type(s)
+        }
+        appendRecent(s)
+    }
+
+    private func emitBackspace(_ count: Int = 1) {
+        if composerEnabled {
+            composerText = String(composerText.dropLast(count))
+        } else {
+            TextInjector.pressKey(TextInjector.backspaceKey, times: count)
+        }
+        dropRecent(count)
+    }
+
+    /// Type the composer buffer into the focused app (optionally with Return).
+    private func flushComposerToApp(pressReturn: Bool) {
+        let text = composerText
+        composerText = ""
+        if !text.isEmpty {
+            TextInjector.type(text)
+        }
+        if pressReturn {
+            TextInjector.pressKey(TextInjector.returnKey)
+        }
+        resetInsertionState()
+        keyboardView.candidates = []
+        keyboardView.predictions = []
+        keyboardView.ghost = nil
+    }
+
+    /// Snapshot used to discard stale async results.
+    private var contextFingerprint: String {
+        composerEnabled ? composerText : recentText
+    }
+
     private func appendRecent(_ s: String) {
         recentText += s
         if recentText.count > 240 {
@@ -156,6 +204,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     /// The model's context: the real focused-field text up to the caret when
     /// the app exposes it; otherwise our own transcript of what we typed.
     private func completionContext() -> (text: String, source: String) {
+        if composerEnabled {
+            return (composerText, "borrador")
+        }
         if let fieldText = FocusedFieldReader.textBeforeCursor(),
            !fieldText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return (fieldText, "campo (AX)")
@@ -173,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         completionTask?.cancel()
         keyboardView.ghost = nil
         guard let provider = completionProvider else { return }
-        let snapshot = recentText
+        let snapshot = contextFingerprint
         let (rawContext, source) = completionContext()
         let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
         guard context.split(separator: " ").count >= 2 else { return }
@@ -187,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             await MainActor.run {
                 guard let self else { return }
                 self.debugLog("✦ FRASE ← \(phrase.map { "«\($0)»" } ?? "(nada)")")
-                guard self.recentText == snapshot,
+                guard self.contextFingerprint == snapshot,
                       let phrase, !phrase.isEmpty else { return }
                 self.keyboardView.ghost = phrase
             }
@@ -237,7 +288,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
                 guard !current.isEmpty else { return }
                 let normCurrent = String(current.lowercased().map(Lexicon.baseKey))
                 let valid = words.filter {
-                    String($0.lowercased().map(Lexicon.baseKey)).hasPrefix(normCurrent)
+                    let norm = String($0.lowercased().map(Lexicon.baseKey))
+                    return (norm.hasPrefix(normCurrent) || Lexicon.isSubsequence(normCurrent, of: norm))
                         && $0.count > current.count
                 }
                 if !valid.isEmpty {
@@ -327,6 +379,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
             controller.onCompletionEngineChange = { [weak self] in self?.applyCompletionEngine() }
             controller.onHoverGlideChange = { [weak self] enabled in self?.keyboardView.hoverGlideEnabled = enabled }
+            controller.onComposerModeChange = { [weak self] enabled in
+                guard let self else { return }
+                // Don't lose composed text when switching modes.
+                if !enabled && !self.composerText.isEmpty {
+                    self.flushComposerToApp(pressReturn: false)
+                }
+                self.composerEnabled = enabled
+                self.keyboardView.composerEnabled = enabled
+            }
             controller.onUserDictionaryChange = { [weak self] words in
                 guard let self else { return }
                 self.userDictionary.replaceAll(words)
@@ -364,8 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
                 let needsSpace = tapBuffer.isEmpty && lastInsertedWord != nil
                     && lastOutputEndsInWordChar
                 let out = (needsSpace ? " " : "") + String(c)
-                TextInjector.type(out)
-                appendRecent(out)
+                emitText(out)
                 lastOutputEndsInWordChar = true
                 lastInsertedWord = nil
                 tapBuffer.append(c)
@@ -375,32 +435,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
                 // ghost — give the latter a longer debounce so they don't queue.
                 requestCompletion(afterDelay: 0.6)
             } else {
-                TextInjector.type(String(c))
-                appendRecent(String(c))
+                emitText(String(c))
                 lastOutputEndsInWordChar = false
                 lastInsertedWord = nil
                 // Punctuation ends the current word.
                 flushTapBuffer()
             }
         case .space:
-            TextInjector.type(" ")
-            appendRecent(" ")
+            emitText(" ")
             lastOutputEndsInWordChar = false
             lastInsertedWord = nil
             flushTapBuffer()
         case .ret:
-            TextInjector.pressKey(TextInjector.returnKey)
-            resetInsertionState()
-            view.candidates = []
-            view.predictions = []
-            view.ghost = nil
+            if composerEnabled {
+                // Insert the composed text into the app and send it.
+                flushComposerToApp(pressReturn: true)
+            } else {
+                TextInjector.pressKey(TextInjector.returnKey)
+                resetInsertionState()
+                view.candidates = []
+                view.predictions = []
+                view.ghost = nil
+            }
         case .backspace:
             if let word = lastInsertedWord {
                 // First backspace right after a glide removes the whole word
                 // (and the space we added before it).
                 let count = word.count + (lastInsertedHadLeadingSpace ? 1 : 0)
-                TextInjector.pressKey(TextInjector.backspaceKey, times: count)
-                dropRecent(count)
+                emitBackspace(count)
                 lastInsertedWord = nil
                 // If we also removed our leading space, the cursor now sits
                 // right after the previous word — the next glide needs a space.
@@ -411,8 +473,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
                 view.predictions = []
                 view.ghost = nil
             } else {
-                TextInjector.pressKey(TextInjector.backspaceKey)
-                dropRecent(1)
+                emitBackspace()
                 if !tapBuffer.isEmpty {
                     tapBuffer.removeLast()
                     showTapCompletions()
@@ -463,8 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
     private func insertGlideWord(_ word: String, alternatives: [String], view: KeyboardView) {
         flushTapBuffer()
         let needsSpace = lastOutputEndsInWordChar
-        TextInjector.type((needsSpace ? " " : "") + word)
-        appendRecent((needsSpace ? " " : "") + word)
+        emitText((needsSpace ? " " : "") + word)
         lastInsertedWord = word
         lastInsertedHadLeadingSpace = needsSpace
         lastOutputEndsInWordChar = true
@@ -479,10 +539,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         // partial word: replace what's typed so far with the full word.
         if !tapBuffer.isEmpty {
             let picked = view.candidates[index]
-            TextInjector.pressKey(TextInjector.backspaceKey, times: tapBuffer.count)
-            dropRecent(tapBuffer.count)
-            TextInjector.type(picked)
-            appendRecent(picked)
+            emitBackspace(tapBuffer.count)
+            emitText(picked)
             tapBuffer = ""
             lastInsertedWord = picked
             lastInsertedHadLeadingSpace = false
@@ -496,10 +554,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         guard let current = lastInsertedWord else { return }
         let picked = view.candidates[index]
         guard picked != current else { return }
-        TextInjector.pressKey(TextInjector.backspaceKey, times: current.count)
-        dropRecent(current.count)
-        TextInjector.type(picked)
-        appendRecent(picked)
+        emitBackspace(current.count)
+        emitText(picked)
         lastInsertedWord = picked
         contextWord = picked
         requestCompletion()
@@ -509,10 +565,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         // AI word suggestion: replace the partial word with the full word.
         guard index < view.predictions.count, !tapBuffer.isEmpty else { return }
         let picked = view.predictions[index]
-        TextInjector.pressKey(TextInjector.backspaceKey, times: tapBuffer.count)
-        dropRecent(tapBuffer.count)
-        TextInjector.type(picked)
-        appendRecent(picked)
+        emitBackspace(tapBuffer.count)
+        emitText(picked)
         tapBuffer = ""
         lastInsertedWord = picked
         lastInsertedHadLeadingSpace = false
@@ -552,7 +606,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         settingsController?.reflectHoverGlide(enabled)
     }
 
+    func keyboardView(_ view: KeyboardView, didRequestInsert pressReturn: Bool) {
+        guard composerEnabled else { return }
+        view.flash("↪")
+        flushComposerToApp(pressReturn: pressReturn)
+    }
+
+    func keyboardViewDidResize(_ view: KeyboardView) {
+        let size = view.currentSize()
+        view.setFrameSize(size)
+        var frame = panel.frame
+        frame.size = size
+        // Same origin: the panel grows upward, the keys stay where they are.
+        panel.setFrame(frame, display: true)
+    }
+
     func keyboardView(_ view: KeyboardView, didEdit action: EditAction) {
+        // In composer mode the actions operate on the buffer itself.
+        if composerEnabled {
+            switch action {
+            case .paste:
+                view.flash("pegar")
+                if let pasted = NSPasteboard.general.string(forType: .string) {
+                    emitText(pasted)
+                    lastOutputEndsInWordChar = pasted.last?.isLetter ?? false
+                }
+            case .selectAllCopy:
+                view.flash("copiado")
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(composerText, forType: .string)
+            case .deleteToEnd:
+                view.flash("⌫ final") // caret is always at the end: nothing to do
+            case .deleteToStart, .deleteAll:
+                view.flash("⌫ todo")
+                composerText = ""
+                resetInsertionState()
+                view.candidates = []
+                view.predictions = []
+                view.ghost = nil
+            }
+            return
+        }
+
         switch action {
         case .paste:
             view.flash("pegar")
@@ -611,8 +706,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate {
         // Mid-word the continuation glues onto the partial word — no space.
         let needsSpace = lastOutputEndsInWordChar && tapBuffer.isEmpty
         tapBuffer = ""
-        TextInjector.type((needsSpace ? " " : "") + text)
-        appendRecent((needsSpace ? " " : "") + text)
+        emitText((needsSpace ? " " : "") + text)
         // Backspace right after accepting removes the whole phrase.
         lastInsertedWord = text
         lastInsertedHadLeadingSpace = needsSpace

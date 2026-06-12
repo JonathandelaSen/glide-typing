@@ -52,13 +52,17 @@ enum CompletionCleaner {
     El usuario está escribiendo una palabra y te da su texto, que acaba en un \
     fragmento de palabra. Responde ÚNICAMENTE con 4 palabras completas candidatas \
     que probablemente esté escribiendo, separadas por comas, sin explicar nada. \
-    Deben empezar por el fragmento (puedes añadir tildes). Incluye términos \
+    Deben empezar por el fragmento (puedes añadir tildes), o contener sus \
+    letras en orden si parece una abreviatura sin vocales. Incluye términos \
     técnicos de programación si encajan con el contexto.
 
-    Ejemplo:
+    Ejemplos:
     Texto: "quiero refac"
     Fragmento: "refac"
     Respuesta: refactorizar, refactoriza, refactorices, refactorización
+    Texto: "limpia el tcld"
+    Fragmento: "tcld"
+    Respuesta: teclado, teclados, teclado
     """
 
     /// Parse a comma/newline-separated word list, keeping only real extensions
@@ -71,7 +75,9 @@ enum CompletionCleaner {
             let word = piece.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”«» .;:"))
             guard !word.isEmpty, !word.contains(" ") else { continue }
             let norm = String(word.lowercased().map(Lexicon.baseKey))
-            guard norm.hasPrefix(normPartial), word.count > partial.count,
+            // Accept prefix extensions and abbreviation expansions (subsequence).
+            guard norm.hasPrefix(normPartial) || Lexicon.isSubsequence(normPartial, of: norm),
+                  word.count > partial.count,
                   !seen.contains(norm) else { continue }
             seen.insert(norm)
             out.append(word)

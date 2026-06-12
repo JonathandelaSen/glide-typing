@@ -52,7 +52,9 @@ final class Lexicon {
     }
 
     /// Best words starting with the given (possibly accentless) prefix,
-    /// ranked across all loaded languages and user words.
+    /// ranked across all loaded languages and user words. When prefix matches
+    /// are scarce, falls back to abbreviation matching: the typed letters as
+    /// an in-order subsequence ("tcld" → "teclado").
     func completions(prefix: String, limit: Int = 4) -> [String] {
         guard !prefix.isEmpty else { return [] }
         let norm = String(prefix.lowercased().map(Lexicon.baseKey))
@@ -61,7 +63,37 @@ final class Lexicon {
             matches.append(entry)
             if matches.count >= 400 { break }
         }
-        return matches.sorted { $0.rank < $1.rank }.prefix(limit).map { $0.word }
+        var out = matches.sorted { $0.rank < $1.rank }.prefix(limit).map { $0.word }
+        if out.count < limit && norm.count >= 3 {
+            var abbreviations: [Entry] = []
+            for entry in entries
+            where entry.normalized.first == norm.first
+                && entry.word.count > prefix.count
+                && !entry.normalized.hasPrefix(norm)
+                && Lexicon.isSubsequence(norm, of: entry.normalized) {
+                abbreviations.append(entry)
+                if abbreviations.count >= 200 { break }
+            }
+            for entry in abbreviations.sorted(by: { $0.rank < $1.rank }) {
+                if !out.contains(entry.word) {
+                    out.append(entry.word)
+                    if out.count == limit { break }
+                }
+            }
+        }
+        return out
+    }
+
+    static func isSubsequence(_ small: String, of big: String) -> Bool {
+        var it = small.makeIterator()
+        var target = it.next()
+        for ch in big {
+            if ch == target {
+                target = it.next()
+                if target == nil { return true }
+            }
+        }
+        return target == nil
     }
 
     private func loadFile(_ name: String) {

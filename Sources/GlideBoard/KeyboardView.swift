@@ -15,6 +15,10 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardView(_ view: KeyboardView, didEdit action: EditAction)
     /// The user toggled between tap mode and drag (no-click glide) mode.
     func keyboardView(_ view: KeyboardView, didSetHoverGlide enabled: Bool)
+    /// Insert the composer buffer into the focused app.
+    func keyboardView(_ view: KeyboardView, didRequestInsert pressReturn: Bool)
+    /// The composer grew or shrank: the panel must resize.
+    func keyboardViewDidResize(_ view: KeyboardView)
 }
 
 /// Two-finger swipe directions and their shortcut actions.
@@ -52,7 +56,7 @@ final class KeyboardView: NSView {
     let unit: CGFloat
     static let margin: CGFloat = 10
     static let handleHeight: CGFloat = 16
-    static let ghostHeight: CGFloat = 32
+    static let ghostHeight: CGFloat = 38
     static let predictionHeight: CGFloat = 30
     static let candidateHeight: CGFloat = 36
     private let keyGap: CGFloat = 5
@@ -68,10 +72,19 @@ final class KeyboardView: NSView {
     var predictions: [String] = [] {
         didSet { needsDisplay = true }
     }
-    /// AI phrase completion (ghost text), shown first in the prediction row.
+    /// AI phrase completion (ghost text), shown inline after the composer text.
     var ghost: String? {
-        didSet { needsDisplay = true }
+        didSet { updateComposerHeight(); needsDisplay = true }
     }
+    /// Composer mode: text is composed here and inserted into the app on demand.
+    var composerEnabled = true {
+        didSet { updateComposerHeight(); needsDisplay = true }
+    }
+    var composerText = "" {
+        didSet { updateComposerHeight(); needsDisplay = true }
+    }
+    /// Height of the top row — grows with the composer text (up to ~4 lines).
+    private(set) var topRowHeight: CGFloat = KeyboardView.ghostHeight
     private var lastPreviewTime: TimeInterval = 0
 
     // Gesture state
@@ -119,8 +132,39 @@ final class KeyboardView: NSView {
     // MARK: - Geometry helpers
 
     private var keysOriginY: CGFloat {
-        KeyboardView.handleHeight + KeyboardView.ghostHeight
+        KeyboardView.handleHeight + topRowHeight
             + KeyboardView.predictionHeight + KeyboardView.candidateHeight
+    }
+
+    /// Current full size, accounting for the dynamic composer height.
+    func currentSize() -> NSSize {
+        NSSize(width: layout.unitColumns * unit + KeyboardView.margin * 2,
+               height: KeyboardView.handleHeight + topRowHeight + KeyboardView.predictionHeight
+                       + KeyboardView.candidateHeight + layout.unitRows * unit + KeyboardView.margin)
+    }
+
+    private func composerParagraph() -> NSMutableParagraphStyle {
+        let p = NSMutableParagraphStyle()
+        p.lineBreakMode = .byWordWrapping
+        return p
+    }
+
+    private func updateComposerHeight() {
+        // Never move the keys under the pointer mid-gesture.
+        guard !tracking && !hoverTracing else { return }
+        var target = KeyboardView.ghostHeight
+        if composerEnabled && (!composerText.isEmpty || ghost != nil) {
+            let chipWidth: CGFloat = 44
+            let width = bounds.width - KeyboardView.margin * 2 - 16 - chipWidth
+            let measured = composedString(paragraph: composerParagraph())
+                .boundingRect(with: NSSize(width: width, height: 1000),
+                              options: [.usesLineFragmentOrigin, .usesFontLeading]).height
+            target = min(max(KeyboardView.ghostHeight, measured + 16), 96)
+        }
+        if abs(target - topRowHeight) > 0.5 {
+            topRowHeight = target
+            delegate?.keyboardViewDidResize(self)
+        }
     }
 
     func pixelFrame(for key: Key) -> CGRect {
@@ -160,24 +204,30 @@ final class KeyboardView: NSView {
         }
     }
 
-    /// Full-width click target for the AI phrase completion.
+    /// Full-width top row: composer (with inline ghost) or the ghost chip.
     private var ghostRect: CGRect? {
-        guard ghost != nil else { return nil }
+        guard composerEnabled || ghost != nil else { return nil }
         return CGRect(x: KeyboardView.margin,
                       y: KeyboardView.handleHeight + 2,
                       width: bounds.width - KeyboardView.margin * 2,
-                      height: KeyboardView.ghostHeight - 4)
+                      height: topRowHeight - 4)
+    }
+
+    /// "Insert into app" chip at the right end of the composer row.
+    private var insertChipRect: CGRect? {
+        guard composerEnabled, let row = ghostRect else { return nil }
+        return CGRect(x: row.maxX - 40, y: row.minY + 3, width: 36, height: row.height - 6)
     }
 
     private var predictionRects: [CGRect] {
         rowRects(count: predictions.count,
-                 y: KeyboardView.handleHeight + KeyboardView.ghostHeight + 1,
+                 y: KeyboardView.handleHeight + topRowHeight + 1,
                  height: KeyboardView.predictionHeight - 2)
     }
 
     private var candidateRects: [CGRect] {
         rowRects(count: candidates.count,
-                 y: KeyboardView.handleHeight + KeyboardView.ghostHeight
+                 y: KeyboardView.handleHeight + topRowHeight
                     + KeyboardView.predictionHeight + 2,
                  height: KeyboardView.candidateHeight - 6)
     }
@@ -227,9 +277,13 @@ final class KeyboardView: NSView {
             return
         }
 
-        // Ghost row, then prediction row, then candidate row.
-        if let ghost, let rect = ghostRect, rect.contains(p) {
-            delegate?.keyboardView(self, didPickGhost: ghost)
+        // Composer row: insert chip, or click to accept the inline ghost.
+        if let rect = ghostRect, rect.contains(p) {
+            if let chip = insertChipRect, chip.insetBy(dx: -3, dy: -3).contains(p) {
+                delegate?.keyboardView(self, didRequestInsert: false)
+            } else if let ghost {
+                delegate?.keyboardView(self, didPickGhost: ghost)
+            }
             return
         }
         for (i, rect) in predictionRects.enumerated() where rect.contains(p) {
@@ -393,6 +447,16 @@ final class KeyboardView: NSView {
     private var swipeActive = false
     private var swipePath: [CGPoint] = []
 
+    // Swipe-up selection mode: keep fingers down, move to choose, lift to accept.
+    private var swipeSelecting = false
+    /// -1 = nothing selected (lift does nothing); 0 candidates, 1 predictions, 2 ghost.
+    private var selRow = -1
+    private var selIndex = 0
+    private var selAccumX: CGFloat = 0
+    private var selAccumY: CGFloat = 0
+    private(set) var selectedPredictionIndex: Int?
+    private(set) var ghostSelected = false
+
     override func scrollWheel(with event: NSEvent) {
         // Normalize deltas to finger direction regardless of "natural scrolling".
         let factor: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
@@ -405,11 +469,28 @@ final class KeyboardView: NSView {
             swipeAccum.dx += event.scrollingDeltaX * factor
             swipeAccum.dy += event.scrollingDeltaY * factor
             swipePath.append(CGPoint(x: swipeAccum.dx, y: swipeAccum.dy))
+
+            if swipeSelecting {
+                selAccumX += event.scrollingDeltaX * factor
+                selAccumY += -event.scrollingDeltaY * factor // fingers up = positive
+                stepSwipeSelection()
+            } else {
+                // A clear upward movement enters selection mode.
+                let fingerY = -swipeAccum.dy
+                if fingerY > 38 && abs(swipeAccum.dx) < fingerY {
+                    enterSwipeSelection()
+                }
+            }
         }
         if event.phase == .ended {
             swipeActive = false
+            let wasSelecting = swipeSelecting
+            let row = selRow, index = selIndex
+            clearSwipeSelection()
             if isCircularStroke(swipePath) {
                 toggleInputMode()
+            } else if wasSelecting {
+                acceptSwipeSelection(row: row, index: index)
             } else {
                 classifySwipe(swipeAccum)
             }
@@ -417,6 +498,95 @@ final class KeyboardView: NSView {
         // Legacy mouse wheel (no gesture phases): each notch is a vertical swipe.
         if event.phase == [] && event.momentumPhase == [] {
             classifySwipe(CGVector(dx: 0, dy: event.scrollingDeltaY * factor * 12))
+        }
+    }
+
+    // MARK: Swipe selection helpers
+
+    private var rowCounts: [Int] {
+        [candidates.count, predictions.count, ghost != nil ? 1 : 0]
+    }
+
+    private func enterSwipeSelection() {
+        let counts = rowCounts
+        guard let firstRow = counts.firstIndex(where: { $0 > 0 }) else { return }
+        swipeSelecting = true
+        selRow = firstRow
+        selIndex = 0
+        selAccumX = 0
+        selAccumY = 0
+        updateSelectionHighlight()
+    }
+
+    private func stepSwipeSelection() {
+        let counts = rowCounts
+        // Horizontal: move within the row.
+        while selAccumX > 60 {
+            selAccumX -= 60
+            if selRow >= 0 { selIndex = min(selIndex + 1, max(0, counts[selRow] - 1)) }
+        }
+        while selAccumX < -60 {
+            selAccumX += 60
+            selIndex = max(0, selIndex - 1)
+        }
+        // Vertical: move between rows (up = candidates → predictions → ghost).
+        while selAccumY > 55 {
+            selAccumY -= 55
+            var next = selRow + 1
+            while next <= 2 && counts[next] == 0 { next += 1 }
+            if next <= 2 { selRow = next; selIndex = min(selIndex, counts[next] - 1) }
+        }
+        while selAccumY < -55 {
+            selAccumY += 55
+            var next = selRow - 1
+            while next >= 0 && counts[next] == 0 { next -= 1 }
+            if next >= 0 {
+                selRow = next
+                selIndex = min(selIndex, counts[next] - 1)
+            } else {
+                selRow = -1 // moved below the rows: deselect, lift cancels
+            }
+        }
+        updateSelectionHighlight()
+    }
+
+    private func updateSelectionHighlight() {
+        hoverCandidateIndex = selRow == 0 ? selIndex : nil
+        selectedPredictionIndex = selRow == 1 ? selIndex : nil
+        ghostSelected = selRow == 2
+        needsDisplay = true
+    }
+
+    private func clearSwipeSelection() {
+        swipeSelecting = false
+        selRow = -1
+        hoverCandidateIndex = nil
+        selectedPredictionIndex = nil
+        ghostSelected = false
+        needsDisplay = true
+    }
+
+    private func acceptSwipeSelection(row: Int, index: Int) {
+        switch row {
+        case 0 where index < candidates.count:
+            flash("✓")
+            if hoverTracing {
+                resetTraceState()
+                delegate?.keyboardView(self, didGlideSelect: index)
+            } else {
+                delegate?.keyboardView(self, didPickCandidate: index)
+            }
+        case 1 where index < predictions.count:
+            flash("✓")
+            delegate?.keyboardView(self, didPickPrediction: index)
+        case 2:
+            if let ghost {
+                flash("✦")
+                if hoverTracing { resetTraceState() }
+                delegate?.keyboardView(self, didPickGhost: ghost)
+            }
+        default:
+            break // deselected: lifting accepts nothing
         }
     }
 
@@ -620,7 +790,7 @@ final class KeyboardView: NSView {
         let items: [(arrow: String, label: String, dx: CGFloat, dy: CGFloat)] = [
             ("→", "espacio", 1, 0),
             ("←", "borrar", -1, 0),
-            ("↑", "aceptar palabra", 0, -1),
+            ("↑", "elegir sugerencia (sin soltar)", 0, -1),
             ("↓", "punto", 0, 1)
         ]
 
@@ -661,10 +831,12 @@ final class KeyboardView: NSView {
     }
 
     private func drawCandidates() {
-        // Ghost row: the AI phrase completion as a full-width chip.
+        // Top row: composer with inline shaded ghost, or the classic ghost chip.
         let base = NSFont.systemFont(ofSize: 13, weight: .regular)
         let italic = NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
-        if let ghost, let rect = ghostRect {
+        if composerEnabled, let rect = ghostRect {
+            drawComposer(in: rect, italic: italic)
+        } else if let ghost, let rect = ghostRect {
             NSColor(calibratedRed: 0.35, green: 0.6, blue: 1.0, alpha: 0.18).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).fill()
             let attrs: [NSAttributedString.Key: Any] = [
@@ -678,11 +850,17 @@ final class KeyboardView: NSView {
                               width: size.width, height: size.height))
         }
 
-        // Prediction row: bigram next words, italic gray.
+        // Prediction row: AI word suggestions, italic gray.
         for (i, rect) in predictionRects.enumerated() {
+            if i == selectedPredictionIndex {
+                NSColor(calibratedRed: 0.25, green: 0.5, blue: 1.0, alpha: 0.8).setFill()
+                NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 1), xRadius: 7, yRadius: 7).fill()
+            }
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: italic,
-                .foregroundColor: NSColor(calibratedWhite: 0.65, alpha: 1)
+                .foregroundColor: i == selectedPredictionIndex
+                    ? NSColor.white
+                    : NSColor(calibratedWhite: 0.65, alpha: 1)
             ]
             let s = NSAttributedString(string: predictions[i], attributes: attrs)
             let size = s.size()
@@ -695,7 +873,7 @@ final class KeyboardView: NSView {
         if !predictions.isEmpty || !candidates.isEmpty {
             NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
             NSRect(x: KeyboardView.margin,
-                   y: KeyboardView.handleHeight + KeyboardView.ghostHeight + KeyboardView.predictionHeight,
+                   y: KeyboardView.handleHeight + topRowHeight + KeyboardView.predictionHeight,
                    width: bounds.width - KeyboardView.margin * 2, height: 1).fill()
         }
 
@@ -722,6 +900,79 @@ final class KeyboardView: NSView {
                 NSRect(x: rect.minX, y: rect.minY + 6, width: 1, height: rect.height - 12).fill()
             }
         }
+    }
+
+    /// The composer: an inset "input" showing the buffer, a caret, the AI
+    /// continuation shaded inline, and the ↪ insert chip.
+    private func drawComposer(in rect: CGRect, italic: NSFont) {
+        NSColor(calibratedWhite: 0.08, alpha: 1).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).fill()
+        if ghostSelected {
+            NSColor(calibratedRed: 0.25, green: 0.5, blue: 1.0, alpha: 0.9).setStroke()
+            let border = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
+            border.lineWidth = 2
+            border.stroke()
+        }
+
+        let chip = insertChipRect
+        let textArea = CGRect(x: rect.minX + 10, y: rect.minY,
+                              width: (chip?.minX ?? rect.maxX) - rect.minX - 16,
+                              height: rect.height)
+
+        let composed = composedString(paragraph: composerParagraph())
+        let measured = composed.boundingRect(with: NSSize(width: textArea.width, height: 1000),
+                                             options: [.usesLineFragmentOrigin, .usesFontLeading]).height
+        // Anchor to the bottom when the text overflows: the end is always visible.
+        let y = measured > textArea.height - 10
+            ? rect.maxY - measured - 7
+            : rect.midY - measured / 2
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6).addClip()
+        composed.draw(with: CGRect(x: textArea.minX, y: y, width: textArea.width, height: measured),
+                      options: [.usesLineFragmentOrigin, .usesFontLeading])
+        NSGraphicsContext.restoreGraphicsState()
+
+        if let chip {
+            NSColor(calibratedRed: 0.18, green: 0.42, blue: 0.95, alpha: 0.5).setFill()
+            NSBezierPath(roundedRect: chip, xRadius: 6, yRadius: 6).fill()
+            let arrow = NSAttributedString(string: "↪", attributes: [
+                .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
+                .foregroundColor: NSColor.white
+            ])
+            let aSize = arrow.size()
+            arrow.draw(at: CGPoint(x: chip.midX - aSize.width / 2, y: chip.midY - aSize.height / 2))
+        }
+    }
+
+    /// Composer text + inline ghost (or the placeholder) as one styled string.
+    private func composedString(paragraph: NSParagraphStyle) -> NSAttributedString {
+        let composed = NSMutableAttributedString()
+        if composerText.isEmpty && ghost == nil {
+            composed.append(NSAttributedString(string: "escribe aquí…", attributes: [
+                .font: NSFont.systemFont(ofSize: 14),
+                .foregroundColor: NSColor(calibratedWhite: 0.4, alpha: 1),
+                .paragraphStyle: paragraph
+            ]))
+            return composed
+        }
+        composed.append(NSAttributedString(string: composerText, attributes: [
+            .font: NSFont.systemFont(ofSize: 14),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph
+        ]))
+        if let ghost {
+            let base = NSFont.systemFont(ofSize: 14)
+            let italic = NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
+            let glue = composerText.isEmpty || composerText.hasSuffix(" ") ? "" : " "
+            composed.append(NSAttributedString(string: glue + ghost, attributes: [
+                .font: italic,
+                .foregroundColor: ghostSelected
+                    ? NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+                    : NSColor(calibratedWhite: 0.5, alpha: 1),
+                .paragraphStyle: paragraph
+            ]))
+        }
+        return composed
     }
 
     private func drawKey(_ key: Key, highlighted: Bool) {

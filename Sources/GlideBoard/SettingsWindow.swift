@@ -59,6 +59,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onScaleChange: ((Double) -> Void)?
     var onCompletionEngineChange: (() -> Void)?
     var onHoverGlideChange: ((Bool) -> Void)?
+    var onComposerModeChange: ((Bool) -> Void)?
     var onUserDictionaryChange: (([String]) -> Void)?
     private var dictionaryView: NSTextView!
     private var hoverCheck: NSButton!
@@ -122,10 +123,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                               target: self, action: #selector(hoverGlideChanged(_:)))
         hoverCheck.state = Settings.hoverGlide ? .on : .off
 
+        let composerCheck = NSButton(checkboxWithTitle: "componer en el panel e insertar con ↪ / ⏎",
+                                     target: self, action: #selector(composerModeChanged(_:)))
+        composerCheck.state = Settings.composerMode ? .on : .off
+
         let grid = NSGridView(views: [
             [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
             [makeLabel("Idioma:"), languagePopup],
             [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
+            [makeLabel("Área de borrador:"), composerCheck],
             [makeLabel("Glide sin clic:"), hoverCheck],
             [makeLabel("Completado IA (✦):"), enginePopup],
             [makeLabel("Modelo de Ollama:"), ollamaModelField]
@@ -195,6 +201,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             Settings.ollamaModel = name
             onCompletionEngineChange?()
         }
+    }
+
+    @objc private func composerModeChanged(_ sender: NSButton) {
+        Settings.composerMode = sender.state == .on
+        onComposerModeChange?(Settings.composerMode)
     }
 
     @objc private func hoverGlideChanged(_ sender: NSButton) {

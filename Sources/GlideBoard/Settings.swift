@@ -31,6 +31,12 @@ enum Settings {
         set { defaults.set(newValue, forKey: "ollamaModel") }
     }
 
+    /// Composer mode: compose text in the panel, insert into the app on demand.
+    static var composerMode: Bool {
+        get { defaults.object(forKey: "composerMode") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "composerMode") }
+    }
+
     /// Glide by hovering: pause on a letter to start, pause again to commit.
     static var hoverGlide: Bool {
         get { defaults.object(forKey: "hoverGlide") as? Bool ?? true }
