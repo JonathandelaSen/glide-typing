@@ -27,7 +27,7 @@ enum Settings {
     }
 
     static var ollamaModel: String {
-        get { defaults.string(forKey: "ollamaModel") ?? "qwen3.5:4b" }
+        get { defaults.string(forKey: "ollamaModel") ?? "gemma3:1b" }
         set { defaults.set(newValue, forKey: "ollamaModel") }
     }
 

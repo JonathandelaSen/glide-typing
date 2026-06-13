@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var hotKey: HotKey?
     private var settingsController: SettingsWindowController?
     private var console: ModelConsole?
+    /// The most recent non-self frontmost app — the one receiving injected text.
+    private var lastExternalApp: NSRunningApplication?
     private var history: TextHistoryConsole?
     private var toggleMenuItem: NSMenuItem?
 
@@ -52,6 +54,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
         bigrams[Language.english.rawValue] = BigramModel(language: .english)
         bigrams[Language.spanish.rawValue] = BigramModel(language: .spanish)
+
+        // Track which external app is frontmost so we can hand keyboard focus
+        // back to it when injecting text (without hiding our own panel).
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        lastExternalApp = NSWorkspace.shared.frontmostApplication
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != selfPID else { return }
+            self?.lastExternalApp = app
+        }
 
         buildPanel()
         buildStatusItem()
@@ -180,6 +194,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         dropRecent(count)
     }
 
+    private func emitBackspaceWord() {
+        if composerEnabled {
+            keyboardView.composerDeleteWord()
+        } else {
+            // Option+Delete removes the previous word in most macOS fields.
+            TextInjector.pressKey(TextInjector.backspaceKey, flags: .maskAlternate)
+        }
+        // We can't know exactly how many characters the app dropped; clear our
+        // shadow of the recent text so we don't trust a stale transcript.
+        recentText = ""
+        contextWord = nil
+    }
+
     /// Type the composer buffer into the focused app (optionally with Return).
     private func flushComposerToApp(pressReturn: Bool) {
         let text = composerText
@@ -190,18 +217,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         keyboardView.predictions = []
         keyboardView.ghost = nil
 
-        let inject = {
+        if panel.isKeyWindow {
+            // The composer was clicked, so our panel holds key status and the
+            // synthetic keystrokes would land in it. Hand key back to the target
+            // app by dropping first responder and reactivating it — no orderOut,
+            // so the panel doesn't flash out and back.
+            panel.makeFirstResponder(nil)
+            lastExternalApp?.activate()
+        }
+        // Always defer injection by the same fixed delay. With the two-step
+        // Enter (first press inserts text, second press submits a Return), two
+        // rapid presses would otherwise race: the immediate Return could land
+        // before the delayed text. A uniform delay keeps them in press order.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             if !text.isEmpty { TextInjector.type(text) }
             if pressReturn { TextInjector.pressKey(TextInjector.returnKey) }
-        }
-        if panel.isKeyWindow {
-            // Hand key status back to the target app before injecting, or the
-            // synthetic keystrokes would land in our own panel.
-            panel.orderOut(nil)
-            panel.orderFrontRegardless()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: inject)
-        } else {
-            inject()
         }
     }
 
@@ -480,6 +510,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     // MARK: - KeyboardViewDelegate
+
+    func keyboardView(_ view: KeyboardView, didRepeatBackspaceByWord byWord: Bool) {
+        if byWord {
+            emitBackspaceWord()
+        } else {
+            emitBackspace()
+            if !tapBuffer.isEmpty { tapBuffer.removeLast() }
+        }
+        // A sustained hold has left the previous-word/glide state meaningless.
+        lastInsertedWord = nil
+        view.candidates = []
+        view.predictions = []
+        view.ghost = nil
+    }
 
     func keyboardView(_ view: KeyboardView, didTap key: Key) {
         switch key.action {

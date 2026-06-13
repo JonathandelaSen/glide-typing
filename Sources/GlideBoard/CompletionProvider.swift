@@ -178,7 +178,16 @@ final class OllamaProvider: CompletionProvider {
             "prompt": prompt,
             "stream": false,
             "think": false,
-            "options": ["num_predict": maxTokens, "temperature": temperature]
+            // Keep the model resident between keystrokes (avoids cold reloads)
+            // and cap the context window — autocomplete never needs more than a
+            // couple thousand tokens, and the default 16K+ just bloats the KV
+            // cache and slows attention.
+            "keep_alive": "30m",
+            "options": [
+                "num_predict": maxTokens,
+                "temperature": temperature,
+                "num_ctx": 2048
+            ]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await URLSession.shared.data(for: request)

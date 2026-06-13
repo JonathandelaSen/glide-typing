@@ -113,7 +113,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         enginePopup.action = #selector(engineChanged)
 
         ollamaModelField = NSTextField(string: Settings.ollamaModel)
-        ollamaModelField.placeholderString = "p. ej. qwen3.5:4b"
+        ollamaModelField.placeholderString = "p. ej. gemma3:1b"
         ollamaModelField.target = self
         ollamaModelField.action = #selector(ollamaModelChanged)
         ollamaModelField.widthAnchor.constraint(equalToConstant: 160).isActive = true

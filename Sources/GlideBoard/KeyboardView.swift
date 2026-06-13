@@ -15,6 +15,9 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardView(_ view: KeyboardView, didEdit action: EditAction)
     /// The user toggled between tap mode and drag (no-click glide) mode.
     func keyboardView(_ view: KeyboardView, didSetHoverGlide enabled: Bool)
+    /// Held-down backspace auto-repeat. `byWord` is true once the hold has
+    /// accelerated past the per-character phase.
+    func keyboardView(_ view: KeyboardView, didRepeatBackspaceByWord byWord: Bool)
     /// Insert the composer buffer into the focused app.
     func keyboardView(_ view: KeyboardView, didRequestInsert pressReturn: Bool)
     /// The composer grew or shrank: the panel must resize.
@@ -122,6 +125,27 @@ final class KeyboardView: NSView {
     func composerDeleteBackward(_ count: Int) {
         composerProgrammatic = true
         for _ in 0..<count { composerView.deleteBackward(nil) }
+        composerProgrammatic = false
+        composerContentChanged()
+    }
+
+    func composerDeleteWord() {
+        let ns = composerView.string as NSString
+        var caret = min(composerView.selectedRange().location, ns.length)
+        guard caret > 0 else { return }
+        let ws = CharacterSet.whitespacesAndNewlines
+        func isWS(_ i: Int) -> Bool {
+            guard let s = Unicode.Scalar(ns.character(at: i)) else { return false }
+            return ws.contains(s)
+        }
+        // Eat trailing whitespace, then the word characters before the caret.
+        while caret > 0, isWS(caret - 1) { caret -= 1 }
+        while caret > 0, !isWS(caret - 1) { caret -= 1 }
+        let start = caret
+        let length = min(composerView.selectedRange().location, ns.length) - start
+        guard length > 0 else { return }
+        composerProgrammatic = true
+        composerView.insertText("", replacementRange: NSRange(location: start, length: length))
         composerProgrammatic = false
         composerContentChanged()
     }
@@ -245,6 +269,10 @@ final class KeyboardView: NSView {
     private var tracking = false
     private var pressedKeyIndex: Int?
     private var hoverKeyIndex: Int?
+    // Backspace press-and-hold auto-repeat.
+    private var backspaceHoldTimer: Timer?
+    private var backspaceHoldTicks = 0
+    private var backspaceDidRepeat = false
     /// Candidate hovered while dragging a glide up into the suggestion row.
     private var hoverCandidateIndex: Int?
     /// Help legend overlay toggled by the "?" button.
@@ -432,7 +460,9 @@ final class KeyboardView: NSView {
         // Composer row: insert chip, or click to accept the inline ghost.
         if let rect = ghostRect, rect.contains(p) {
             if let chip = insertChipRect, chip.insetBy(dx: -3, dy: -3).contains(p) {
-                delegate?.keyboardView(self, didRequestInsert: false)
+                // With composed text: insert it without submitting. With an
+                // empty buffer: submit a Return in the target app.
+                delegate?.keyboardView(self, didRequestInsert: composerString.isEmpty)
             } else if let ghost {
                 delegate?.keyboardView(self, didPickGhost: ghost)
             }
@@ -451,7 +481,46 @@ final class KeyboardView: NSView {
         tracePoints = [p]
         pressedKeyIndex = keyIndex(at: p)
         hoverKeyIndex = pressedKeyIndex
+        if let idx = pressedKeyIndex, layout.keys[idx].action == .backspace {
+            startBackspaceHold()
+        }
         needsDisplay = true
+    }
+
+    // MARK: - Backspace press-and-hold
+
+    private func startBackspaceHold() {
+        backspaceHoldTimer?.invalidate()
+        backspaceHoldTicks = 0
+        backspaceDidRepeat = false
+        // First repeat fires after a deliberate hold; later ticks accelerate
+        // and, past the per-character phase, delete whole words.
+        scheduleBackspaceTick(after: 0.35)
+    }
+
+    private func scheduleBackspaceTick(after interval: TimeInterval) {
+        let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            self?.fireBackspaceRepeat()
+        }
+        // .common keeps it firing even while the mouse button is held down.
+        RunLoop.main.add(t, forMode: .common)
+        backspaceHoldTimer = t
+    }
+
+    private func fireBackspaceRepeat() {
+        backspaceDidRepeat = true
+        backspaceHoldTicks += 1
+        // Switch from characters to words once the hold has been sustained.
+        let byWord = backspaceHoldTicks > 9
+        delegate?.keyboardView(self, didRepeatBackspaceByWord: byWord)
+        // Accelerate: start slow, ramp toward a brisk steady cadence.
+        let interval = max(0.05, 0.18 - Double(backspaceHoldTicks) * 0.012)
+        scheduleBackspaceTick(after: interval)
+    }
+
+    private func stopBackspaceHold() {
+        backspaceHoldTimer?.invalidate()
+        backspaceHoldTimer = nil
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -471,6 +540,12 @@ final class KeyboardView: NSView {
         tracePoints.append(p)
         hoverKeyIndex = keyIndex(at: p)
 
+        // If the finger slides off the backspace key, cancel the auto-repeat.
+        if backspaceHoldTimer != nil,
+           hoverKeyIndex.map({ layout.keys[$0].action }) != .backspace {
+            stopBackspaceHold()
+        }
+
         // Throttled live preview of the word being formed.
         let now = Date.timeIntervalSinceReferenceDate
         if now - lastPreviewTime > 0.09,
@@ -484,6 +559,15 @@ final class KeyboardView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard tracking else { return }
         tracking = false
+        stopBackspaceHold()
+        // The hold already deleted plenty — don't also emit a tap-delete.
+        if backspaceDidRepeat {
+            backspaceDidRepeat = false
+            pressedKeyIndex = nil
+            hoverKeyIndex = nil
+            needsDisplay = true
+            return
+        }
         defer {
             // Keep the trace alive if this tap just started tap-toggle gliding.
             if !hoverTracing {
