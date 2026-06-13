@@ -3,6 +3,37 @@ import Foundation
 import FoundationModels
 #endif
 
+/// One model query, fully described — for the live console.
+struct ModelQuery {
+    let kind: String
+    let isPhrase: Bool
+    let engine: String
+    let ms: Int
+    let source: String
+    let context: String
+    let raw: String
+    let cleaned: String
+    let date = Date()
+    var isEmpty: Bool { cleaned == "(nada)" }
+}
+
+/// Live log of every model query.
+final class QueryLog {
+    static let shared = QueryLog()
+    /// Set by the requester right before each call (context source label).
+    var currentSource = "—"
+    var sink: ((ModelQuery) -> Void)?
+
+    func record(kind: String, isPhrase: Bool, engine: String, ms: Int,
+                context: String, raw: String, cleaned: String) {
+        let query = ModelQuery(kind: kind, isPhrase: isPhrase, engine: engine, ms: ms,
+                               source: currentSource, context: context,
+                               raw: raw.trimmingCharacters(in: .whitespacesAndNewlines),
+                               cleaned: cleaned)
+        DispatchQueue.main.async { self.sink?(query) }
+    }
+}
+
 /// A source of short phrase completions ("ghost text") and word suggestions.
 protocol CompletionProvider {
     func complete(context: String) async throws -> String?
@@ -108,21 +139,29 @@ final class SystemModelProvider: CompletionProvider {
     func complete(context: String) async throws -> String? {
         let session = LanguageModelSession(instructions: CompletionCleaner.instructions)
         let options = GenerationOptions(temperature: 0.3, maximumResponseTokens: 16)
-        let response = try await session.respond(
-            to: "Texto: \"\(context)\"\nRespuesta:",
-            options: options
-        )
-        return CompletionCleaner.clean(response.content, context: context)
+        let prompt = "Texto: \"\(context)\"\nRespuesta:"
+        let start = Date()
+        let response = try await session.respond(to: prompt, options: options)
+        let cleaned = CompletionCleaner.clean(response.content, context: context)
+        QueryLog.shared.record(kind: "✦ frase", isPhrase: true, engine: "Apple",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: context, raw: response.content,
+                               cleaned: cleaned ?? "(nada)")
+        return cleaned
     }
 
     func suggestWords(context: String, partial: String) async throws -> [String] {
         let session = LanguageModelSession(instructions: CompletionCleaner.wordInstructions)
         let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 30)
-        let response = try await session.respond(
-            to: "Texto: \"\(context)\"\nFragmento: \"\(partial)\"\nRespuesta:",
-            options: options
-        )
-        return CompletionCleaner.cleanWordList(response.content, partial: partial)
+        let prompt = "Texto: \"\(context)\"\nFragmento: \"\(partial)\"\nRespuesta:"
+        let start = Date()
+        let response = try await session.respond(to: prompt, options: options)
+        let cleaned = CompletionCleaner.cleanWordList(response.content, partial: partial)
+        QueryLog.shared.record(kind: "palabra «\(partial)»", isPhrase: false, engine: "Apple",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: context, raw: response.content,
+                               cleaned: cleaned.isEmpty ? "(nada)" : cleaned.joined(separator: ", "))
+        return cleaned
     }
 }
 
@@ -151,14 +190,27 @@ final class OllamaProvider: CompletionProvider {
     func complete(context: String) async throws -> String? {
         let prompt = CompletionCleaner.instructions
             + "\n\nTexto: \"\(context)\"\nRespuesta:"
+        let start = Date()
         guard let response = try await generate(prompt: prompt, maxTokens: 16, temperature: 0.3) else { return nil }
-        return CompletionCleaner.clean(response, context: context)
+        let cleaned = CompletionCleaner.clean(response, context: context)
+        QueryLog.shared.record(kind: "✦ frase", isPhrase: true,
+                               engine: "Ollama (\(Settings.ollamaModel))",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: context, raw: response, cleaned: cleaned ?? "(nada)")
+        return cleaned
     }
 
     func suggestWords(context: String, partial: String) async throws -> [String] {
         let prompt = CompletionCleaner.wordInstructions
             + "\n\nTexto: \"\(context)\"\nFragmento: \"\(partial)\"\nRespuesta:"
+        let start = Date()
         guard let response = try await generate(prompt: prompt, maxTokens: 30, temperature: 0.2) else { return [] }
-        return CompletionCleaner.cleanWordList(response, partial: partial)
+        let cleaned = CompletionCleaner.cleanWordList(response, partial: partial)
+        QueryLog.shared.record(kind: "palabra «\(partial)»", isPhrase: false,
+                               engine: "Ollama (\(Settings.ollamaModel))",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: context, raw: response,
+                               cleaned: cleaned.isEmpty ? "(nada)" : cleaned.joined(separator: ", "))
+        return cleaned
     }
 }

@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
     private var settingsController: SettingsWindowController?
-    private var debugController: DebugWindowController?
+    private var console: ModelConsole?
     private var toggleMenuItem: NSMenuItem?
 
     private var language: Language = Settings.language
@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         buildPanel()
         buildStatusItem()
 
+        QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
         applyHotKey()
         applyCompletionEngine()
         showPanel()
@@ -231,9 +232,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         return (recentText, "transcripción interna")
     }
 
-    private func debugLog(_ message: String) {
-        debugController?.log(message)
-    }
 
     /// Ask the model for a phrase completion. Pass a delay to debounce while
     /// the user is still tapping letters.
@@ -245,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let (rawContext, source) = completionContext()
         let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
         guard context.split(separator: " ").count >= 2 else { return }
-        debugLog("✦ FRASE — fuente: \(source)\ncontexto (\(context.count) car.):\n«\(context)»")
+        QueryLog.shared.currentSource = source
         completionTask = Task { [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -254,7 +252,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             let phrase = try? await provider.complete(context: context)
             await MainActor.run {
                 guard let self else { return }
-                self.debugLog("✦ FRASE ← \(phrase.map { "«\($0)»" } ?? "(nada)")")
                 guard self.contextFingerprint == snapshot,
                       let phrase, !phrase.isEmpty else { return }
                 self.keyboardView.ghost = phrase
@@ -318,14 +315,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let partial = tapBuffer
         let (rawContext, source) = completionContext()
         let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        debugLog("PALABRA '\(partial)' — fuente: \(source)\ncontexto (\(context.count) car.):\n«\(context)»")
+        QueryLog.shared.currentSource = source
         wordSuggestTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             if Task.isCancelled { return }
             let words = (try? await provider.suggestWords(context: context, partial: partial)) ?? []
             await MainActor.run {
                 guard let self else { return }
-                self.debugLog("PALABRA '\(partial)' ← \(words.isEmpty ? "(nada)" : words.joined(separator: ", "))")
                 // Don't require the text to be untouched — the suggestion is
                 // still valid if it extends whatever the word looks like NOW.
                 let current = self.tapBuffer
@@ -377,7 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
-        let debug = NSMenuItem(title: "Contexto del modelo (debug)…", action: #selector(openDebug), keyEquivalent: "")
+        let debug = NSMenuItem(title: "Consola del modelo (en vivo)…", action: #selector(openDebug), keyEquivalent: "")
         debug.target = self
         menu.addItem(debug)
         menu.addItem(.separator())
@@ -406,11 +402,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     @objc private func openDebug() {
-        if debugController == nil {
-            debugController = DebugWindowController()
+        if console == nil {
+            console = ModelConsole()
         }
-        NSApp.activate(ignoringOtherApps: true)
-        debugController?.window?.makeKeyAndOrderFront(nil)
+        if console!.isVisible {
+            console!.close()
+        } else {
+            console!.attach(to: panel)
+        }
     }
 
     // MARK: - Settings
@@ -456,6 +455,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         buildPanel()
         panel.setFrameOrigin(oldOrigin)
         if wasVisible { showPanel() }
+        if let console, console.isVisible {
+            console.attach(to: panel)
+        }
     }
 
     // MARK: - KeyboardViewDelegate
@@ -663,6 +665,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         frame.size = size
         // Same origin: the panel grows upward, the keys stay where they are.
         panel.setFrame(frame, display: true)
+        if let console, console.isVisible {
+            console.reposition(relativeTo: panel)
+        }
     }
 
     func keyboardView(_ view: KeyboardView, didEdit action: EditAction) {
