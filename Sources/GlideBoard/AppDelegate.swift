@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var hotKey: HotKey?
     private var settingsController: SettingsWindowController?
     private var console: ModelConsole?
+    private var history: TextHistoryConsole?
     private var toggleMenuItem: NSMenuItem?
 
     private var language: Language = Settings.language
@@ -165,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             keyboardView.composerInsert(s)
         } else {
             TextInjector.type(s)
+            history?.record(s)
         }
         appendRecent(s)
     }
@@ -181,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     /// Type the composer buffer into the focused app (optionally with Return).
     private func flushComposerToApp(pressReturn: Bool) {
         let text = composerText
+        history?.record(text)
         keyboardView.composerClear()
         resetInsertionState()
         keyboardView.candidates = []
@@ -376,6 +379,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let debug = NSMenuItem(title: "Consola del modelo (en vivo)…", action: #selector(openDebug), keyEquivalent: "")
         debug.target = self
         menu.addItem(debug)
+        let textHistory = NSMenuItem(title: "Histórico de texto introducido…", action: #selector(openHistory), keyEquivalent: "")
+        menu.addItem(textHistory)
         menu.addItem(.separator())
         let es = NSMenuItem(title: "Español", action: #selector(setSpanish), keyEquivalent: "")
         es.target = self
@@ -409,6 +414,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             console!.close()
         } else {
             console!.attach(to: panel)
+        }
+    }
+
+    @objc private func openHistory() {
+        if history == nil {
+            history = TextHistoryConsole()
+        }
+        if history!.isVisible {
+            history!.close()
+        } else {
+            history!.attach(to: panel)
         }
     }
 
@@ -458,6 +474,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         if let console, console.isVisible {
             console.attach(to: panel)
         }
+        if let history, history.isVisible {
+            history.attach(to: panel)
+        }
     }
 
     // MARK: - KeyboardViewDelegate
@@ -494,8 +513,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             flushTapBuffer()
         case .ret:
             if composerEnabled {
-                // Insert the composed text into the app and send it.
-                flushComposerToApp(pressReturn: true)
+                // With composed text: insert it into the app but don't submit,
+                // so you can review or keep composing. With an empty buffer:
+                // forward a plain Return to submit in the target app without
+                // leaving the keyboard.
+                flushComposerToApp(pressReturn: composerText.isEmpty)
             } else {
                 TextInjector.pressKey(TextInjector.returnKey)
                 resetInsertionState()
