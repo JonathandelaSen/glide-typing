@@ -11,6 +11,7 @@ final class Lexicon {
         /// Accent-stripped word (not deduped) — for prefix autocompletion.
         let normalized: String
         let rank: Int
+        let language: Language
     }
 
     /// Rank given to user-learned words: high priority without beating
@@ -43,7 +44,7 @@ final class Lexicon {
         guard keys.count >= 2 else { return false }
         let entry = Entry(word: w, keySequence: keys,
                           normalized: String(w.map(Lexicon.baseKey)),
-                          rank: Lexicon.userWordRank)
+                          rank: Lexicon.userWordRank, language: .spanish)
         entries.insert(entry, at: min(Lexicon.userWordRank, entries.count))
         byEnds["\(keys.first!)\(keys.last!)", default: []].append(entry)
         byFirst[keys.first!, default: []].append(entry)
@@ -110,7 +111,8 @@ final class Lexicon {
             let keys = Lexicon.keySequence(for: word)
             guard keys.count >= 2 else { rank += 1; continue } // single-key words are tapped, not glided
             let entry = Entry(word: word, keySequence: keys,
-                              normalized: String(word.map(Lexicon.baseKey)), rank: rank)
+                              normalized: String(word.map(Lexicon.baseKey)), rank: rank,
+                              language: name.hasPrefix("en") ? .english : .spanish)
             entries.append(entry)
             byEnds["\(keys.first!)\(keys.last!)", default: []].append(entry)
             byFirst[keys.first!, default: []].append(entry)

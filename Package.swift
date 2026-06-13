@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "GlideBoard",
             path: "Sources/GlideBoard"
+        ),
+        .testTarget(
+            name: "GlideBoardTests",
+            dependencies: ["GlideBoard"],
+            path: "Tests/GlideBoardTests"
         )
     ]
 )

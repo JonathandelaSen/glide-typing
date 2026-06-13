@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var lexicon: Lexicon!
     private let userDictionary = UserDictionary()
     private var bigrams: [Language.RawValue: BigramModel] = [:]
+    private let personalWords = PersonalWordModel()
 
     // Insertion state for smart spacing / candidate replacement / word-delete.
     private var lastInsertedWord: String?
@@ -277,18 +278,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
         guard context.split(separator: " ").count >= 2 else { return }
         QueryLog.shared.currentSource = source
-        completionTask = Task { [weak self] in
+        completionTask = Task { @MainActor [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 if Task.isCancelled { return }
             }
             let phrase = try? await provider.complete(context: context)
-            await MainActor.run {
-                guard let self else { return }
-                guard self.contextFingerprint == snapshot,
-                      let phrase, !phrase.isEmpty else { return }
-                self.keyboardView.ghost = phrase
-            }
+            guard let self else { return }
+            guard self.contextFingerprint == snapshot,
+                  let phrase, !phrase.isEmpty else { return }
+            self.keyboardView.ghost = phrase
         }
     }
 
@@ -349,25 +348,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let (rawContext, source) = completionContext()
         let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
         QueryLog.shared.currentSource = source
-        wordSuggestTask = Task { [weak self] in
+        wordSuggestTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             if Task.isCancelled { return }
             let words = (try? await provider.suggestWords(context: context, partial: partial)) ?? []
-            await MainActor.run {
-                guard let self else { return }
-                // Don't require the text to be untouched — the suggestion is
-                // still valid if it extends whatever the word looks like NOW.
-                let current = self.tapBuffer
-                guard !current.isEmpty else { return }
-                let normCurrent = String(current.lowercased().map(Lexicon.baseKey))
-                let valid = words.filter {
-                    let norm = String($0.lowercased().map(Lexicon.baseKey))
-                    return (norm.hasPrefix(normCurrent) || Lexicon.isSubsequence(normCurrent, of: norm))
-                        && $0.count > current.count
-                }
-                if !valid.isEmpty {
-                    self.keyboardView.predictions = valid
-                }
+            guard let self else { return }
+            // Don't require the text to be untouched — the suggestion is
+            // still valid if it extends whatever the word looks like NOW.
+            let current = self.tapBuffer
+            guard !current.isEmpty else { return }
+            let normCurrent = String(current.lowercased().map(Lexicon.baseKey))
+            let valid = words.filter {
+                let norm = String($0.lowercased().map(Lexicon.baseKey))
+                return (norm.hasPrefix(normCurrent) || Lexicon.isSubsequence(normCurrent, of: norm))
+                    && $0.count > current.count
+            }
+            if !valid.isEmpty {
+                self.keyboardView.predictions = valid
             }
         }
     }
@@ -617,7 +614,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     func keyboardView(_ view: KeyboardView, didGlide points: [CGPoint]) {
         guard let decoder = makeDecoder(for: view) else { return }
-        let results = decoder.decode(points: points)
+        let model = bigrams[language.rawValue]
+        let previous = contextWord
+        let results = decoder.decode(
+            points: points,
+            activeLanguage: language,
+            contextScore: { model?.score(previous: previous, word: $0) ?? 0 },
+            personalScore: { [personalWords] in personalWords.score($0) }
+        )
         guard let best = results.first else {
             view.candidates = []
             return
@@ -630,6 +634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         // The glide was released on top of a suggestion: insert that word.
         guard index < view.candidates.count else { return }
         let word = view.candidates[index]
+        personalWords.learn(word, weight: index == 0 ? 1 : 3)
         insertGlideWord(word, alternatives: view.candidates, view: view)
     }
 
@@ -666,6 +671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         guard let current = lastInsertedWord else { return }
         let picked = view.candidates[index]
         guard picked != current else { return }
+        personalWords.learn(picked, weight: 4)
         emitBackspace(current.count)
         emitText(picked)
         lastInsertedWord = picked

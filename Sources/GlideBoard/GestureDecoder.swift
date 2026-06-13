@@ -15,32 +15,37 @@ final class GestureDecoder {
         self.lexicon = lexicon
     }
 
-    func decode(points input: [CGPoint], maxResults: Int = 4) -> [String] {
+    func decode(points input: [CGPoint], activeLanguage: Language,
+                contextScore: (String) -> Double = { _ in 0 },
+                personalScore: (String) -> Double = { _ in 0 },
+                maxResults: Int = 4) -> [String] {
         guard input.count >= 2 else { return [] }
-        let raw = Self.smooth(input)
+        let raw = Self.simplify(Self.smooth(input), tolerance: keyWidth * 0.10)
         let gesture = Self.resample(raw, count: resampleCount)
         let gestureLength = Self.pathLength(raw)
-        let start = raw.first!, end = raw.last!
-        let pruneRadius = keyWidth * 1.6
 
-        // Prune by first/last key proximity using the (first,last) index.
-        var firsts: [Character] = [], lasts: [Character] = []
-        for (ch, c) in keyCenters {
-            if hypot(c.x - start.x, c.y - start.y) <= pruneRadius { firsts.append(ch) }
-            if hypot(c.x - end.x, c.y - end.y) <= pruneRadius { lasts.append(ch) }
+        // Broad, cheap pass over the full lexicon prevents catastrophic
+        // endpoint pruning. Expensive anchor/turn scoring then runs only on
+        // plausible shapes, keeping word commits responsive.
+        var coarse: [(entry: Lexicon.Entry, cost: Double)] = []
+        coarse.reserveCapacity(lexicon.entries.count)
+        for entry in lexicon.entries {
+            guard let cost = coarseScore(entry: entry, gesture: gesture,
+                                         rawGesture: raw, gestureLength: gestureLength) else { continue }
+            coarse.append((entry, cost))
         }
+        coarse.sort { $0.cost < $1.cost }
 
-        var scored: [(word: String, cost: Double)] = []
-        for f in firsts {
-            for l in lasts {
-                guard let bucket = lexicon.byEnds["\(f)\(l)"] else { continue }
-                for entry in bucket {
-                    guard let cost = score(entry: entry, gesture: gesture, gestureLength: gestureLength) else { continue }
-                    scored.append((entry.word, cost))
-                }
-            }
+        var scored: [GestureCandidate] = []
+        for item in coarse.prefix(320) {
+            let entry = item.entry
+            guard let cost = score(entry: entry, gesture: gesture, rawGesture: raw,
+                                   gestureLength: gestureLength) else { continue }
+            scored.append(GestureCandidate(word: entry.word, gestureCost: cost,
+                                           rank: entry.rank, language: entry.language))
         }
-        scored.sort { $0.cost < $1.cost }
+        scored = GestureRanker.rank(scored, activeLanguage: activeLanguage,
+                                    contextScore: contextScore, personalScore: personalScore)
         var seen = Set<String>()
         var out: [String] = []
         for s in scored where !seen.contains(s.word) {
@@ -49,6 +54,29 @@ final class GestureDecoder {
             if out.count == maxResults { break }
         }
         return out
+    }
+
+    private func coarseScore(entry: Lexicon.Entry, gesture: [CGPoint], rawGesture: [CGPoint],
+                             gestureLength: CGFloat) -> Double? {
+        var ideal: [CGPoint] = []
+        ideal.reserveCapacity(entry.keySequence.count)
+        for ch in entry.keySequence {
+            guard let c = keyCenters[ch] else { return nil }
+            ideal.append(c)
+        }
+        let idealLength = Self.pathLength(ideal)
+        if gestureLength > keyWidth {
+            let ratio = idealLength / gestureLength
+            if ratio < 0.3 || ratio > 2.6 { return nil }
+        }
+        let word = Self.resample(ideal, count: resampleCount)
+        var locSum: CGFloat = 0
+        for i in 0..<resampleCount {
+            locSum += hypot(gesture[i].x - word[i].x, gesture[i].y - word[i].y)
+        }
+        let location = Double(locSum / CGFloat(resampleCount) / keyWidth)
+        return 0.72 * location + 0.70 * shapeDistance(gesture, word)
+            + 0.34 * endpointDistance(rawGesture, ideal)
     }
 
     /// Decode an in-progress gesture: the path so far is matched against the
@@ -120,7 +148,8 @@ final class GestureDecoder {
         return out
     }
 
-    private func score(entry: Lexicon.Entry, gesture: [CGPoint], gestureLength: CGFloat) -> Double? {
+    private func score(entry: Lexicon.Entry, gesture: [CGPoint], rawGesture: [CGPoint],
+                       gestureLength: CGFloat) -> Double? {
         var ideal: [CGPoint] = []
         for ch in entry.keySequence {
             guard let c = keyCenters[ch] else { return nil }
@@ -141,9 +170,39 @@ final class GestureDecoder {
         let location = Double(locSum / CGFloat(resampleCount) / keyWidth)
 
         let shape = shapeDistance(gesture, word)
-        let frequency = 0.30 * log10(Double(entry.rank + 10))
+        let anchors = anchorDistance(rawGesture, ideal)
+        let turns = turnDistance(rawGesture, ideal)
+        let endpoints = endpointDistance(rawGesture, ideal)
+        return 0.72 * location + 0.70 * shape + 0.62 * anchors
+            + 0.42 * turns + 0.34 * endpoints
+    }
 
-        return location + 0.9 * shape + frequency
+    private func endpointDistance(_ gesture: [CGPoint], _ ideal: [CGPoint]) -> Double {
+        guard let start = gesture.first, let end = gesture.last,
+              let idealStart = ideal.first, let idealEnd = ideal.last else { return 10 }
+        return Double((hypot(start.x - idealStart.x, start.y - idealStart.y)
+                     + hypot(end.x - idealEnd.x, end.y - idealEnd.y)) / (2 * keyWidth))
+    }
+
+    private func anchorDistance(_ gesture: [CGPoint], _ ideal: [CGPoint]) -> Double {
+        guard !ideal.isEmpty else { return 10 }
+        var total: CGFloat = 0, weights: CGFloat = 0
+        for (index, anchor) in ideal.enumerated() {
+            let weight: CGFloat = index == 0 || index == ideal.count - 1 ? 2.2 : 1
+            let nearest = gesture.map { hypot($0.x - anchor.x, $0.y - anchor.y) }.min() ?? keyWidth * 4
+            total += min(nearest / keyWidth, 2.5) * weight
+            weights += weight
+        }
+        return Double(total / weights)
+    }
+
+    private func turnDistance(_ gesture: [CGPoint], _ ideal: [CGPoint]) -> Double {
+        let a = Self.turnAngles(Self.simplify(gesture, tolerance: keyWidth * 0.14))
+        let b = Self.turnAngles(ideal)
+        guard !a.isEmpty || !b.isEmpty else { return 0 }
+        let count = max(a.count, b.count)
+        return zip(Self.resampleValues(a, count: count), Self.resampleValues(b, count: count))
+            .map { abs($0 - $1) / .pi }.reduce(0, +) / Double(count)
     }
 
     /// Distance after normalizing translation and scale.
@@ -189,6 +248,51 @@ final class GestureDecoder {
         out[0] = pts[0]
         out[out.count - 1] = pts[pts.count - 1]
         return out
+    }
+
+    static func simplify(_ pts: [CGPoint], tolerance: CGFloat) -> [CGPoint] {
+        guard pts.count > 2 else { return pts }
+        let first = pts[0], last = pts[pts.count - 1]
+        var maxDistance: CGFloat = 0, split = 0
+        for i in 1..<(pts.count - 1) {
+            let d = pointSegmentDistance(pts[i], first, last)
+            if d > maxDistance { maxDistance = d; split = i }
+        }
+        guard maxDistance > tolerance else { return [first, last] }
+        let left = simplify(Array(pts[0...split]), tolerance: tolerance)
+        let right = simplify(Array(pts[split...]), tolerance: tolerance)
+        return left.dropLast() + right
+    }
+
+    private static func pointSegmentDistance(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 1e-9 else { return hypot(p.x - a.x, p.y - a.y) }
+        let t = min(1, max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared))
+        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+    }
+
+    private static func turnAngles(_ pts: [CGPoint]) -> [Double] {
+        guard pts.count > 2 else { return [] }
+        return (1..<(pts.count - 1)).compactMap { i in
+            var delta = atan2(Double(pts[i + 1].y - pts[i].y), Double(pts[i + 1].x - pts[i].x))
+                - atan2(Double(pts[i].y - pts[i - 1].y), Double(pts[i].x - pts[i - 1].x))
+            while delta > .pi { delta -= 2 * .pi }
+            while delta < -.pi { delta += 2 * .pi }
+            return abs(delta) > 0.20 ? delta : nil
+        }
+    }
+
+    private static func resampleValues(_ values: [Double], count: Int) -> [Double] {
+        guard count > 0 else { return [] }
+        guard !values.isEmpty else { return Array(repeating: 0, count: count) }
+        guard values.count > 1, count > 1 else { return Array(repeating: values[0], count: count) }
+        return (0..<count).map { i in
+            let position = Double(i) * Double(values.count - 1) / Double(count - 1)
+            let low = Int(position.rounded(.down)), high = min(values.count - 1, low + 1)
+            let t = position - Double(low)
+            return values[low] * (1 - t) + values[high] * t
+        }
     }
 
     static func pathLength(_ pts: [CGPoint]) -> CGFloat {

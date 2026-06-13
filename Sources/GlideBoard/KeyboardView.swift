@@ -548,7 +548,7 @@ final class KeyboardView: NSView {
 
         // Throttled live preview of the word being formed.
         let now = Date.timeIntervalSinceReferenceDate
-        if now - lastPreviewTime > 0.09,
+        if now - lastPreviewTime > 0.14,
            let idx = pressedKeyIndex, layout.keys[idx].isLetter {
             lastPreviewTime = now
             delegate?.keyboardView(self, didUpdateGlide: tracePoints)
@@ -642,7 +642,7 @@ final class KeyboardView: NSView {
             tracePoints.append(p)
             hoverKeyIndex = keyIndex(at: p)
             let now = Date.timeIntervalSinceReferenceDate
-            if now - lastPreviewTime > 0.09 {
+            if now - lastPreviewTime > 0.14 {
                 lastPreviewTime = now
                 delegate?.keyboardView(self, didUpdateGlide: tracePoints)
             }

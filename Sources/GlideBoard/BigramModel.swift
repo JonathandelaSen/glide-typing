@@ -47,6 +47,13 @@ final class BigramModel {
         return scores.sorted { $0.value > $1.value }.prefix(limit).map { $0.key }
     }
 
+    func score(previous: String?, word: String) -> Double {
+        guard let previous else { return 0 }
+        let predictions = predict(after: previous, limit: 20)
+        guard let index = predictions.firstIndex(of: word.lowercased()) else { return 0 }
+        return 1 - Double(index) / Double(max(1, predictions.count))
+    }
+
     func learn(previous: String?, word: String) {
         guard let prev = previous?.lowercased(), !prev.isEmpty else { return }
         let w = word.lowercased()
