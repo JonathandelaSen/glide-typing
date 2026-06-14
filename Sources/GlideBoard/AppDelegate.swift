@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         buildStatusItem()
 
         QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
+        QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
         applyHotKey()
         applyCompletionEngine()
         showPanel()
@@ -275,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         guard let provider = completionProvider else { return }
         let snapshot = contextFingerprint
         let (rawContext, source) = completionContext()
-        let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = CompletionCleaner.contextForModel(rawContext)
         guard context.split(separator: " ").count >= 2 else { return }
         QueryLog.shared.currentSource = source
         completionTask = Task { @MainActor [weak self] in
@@ -706,8 +707,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             view.flash("␣")
             keyboardView(view, didTap: Key(action: .space, label: "", unitFrame: .zero))
         case .up:
-            // Accept the first suggested word (dictionary row, then AI row).
-            if !view.candidates.isEmpty {
+            // Phrase continuation is the highest-value shortcut when the user
+            // is between words; mid-word, complete that word first.
+            if tapBuffer.isEmpty, let ghost = view.ghost {
+                view.flash("✦")
+                keyboardView(view, didPickGhost: ghost)
+            } else if !view.candidates.isEmpty {
                 view.flash("✓")
                 keyboardView(view, didPickCandidate: 0)
             } else if !view.predictions.isEmpty {
@@ -829,6 +834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     func keyboardView(_ view: KeyboardView, didPickGhost text: String) {
+        QueryLog.shared.recordPhraseAccepted()
         // Mid-word the continuation glues onto the partial word — no space.
         let needsSpace = lastOutputEndsInWordChar && tapBuffer.isEmpty
         tapBuffer = ""

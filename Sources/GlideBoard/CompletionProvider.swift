@@ -23,6 +23,7 @@ final class QueryLog {
     /// Set by the requester right before each call (context source label).
     var currentSource = "—"
     var sink: ((ModelQuery) -> Void)?
+    var phraseAcceptedSink: (() -> Void)?
 
     func record(kind: String, isPhrase: Bool, engine: String, ms: Int,
                 context: String, raw: String, cleaned: String) {
@@ -31,6 +32,10 @@ final class QueryLog {
                                raw: raw.trimmingCharacters(in: .whitespacesAndNewlines),
                                cleaned: cleaned)
         DispatchQueue.main.async { self.sink?(query) }
+    }
+
+    func recordPhraseAccepted() {
+        DispatchQueue.main.async { self.phraseAcceptedSink?() }
     }
 }
 
@@ -42,11 +47,27 @@ protocol CompletionProvider {
 }
 
 enum CompletionCleaner {
+    /// Keep the most relevant tail without erasing the final space/newline:
+    /// that separator tells the model whether to continue or finish a word.
+    static func contextForModel(_ raw: String, maxLength: Int = 450) -> String {
+        guard raw.count > maxLength else { return raw }
+        var tail = String(raw.suffix(maxLength))
+        if let boundary = tail.firstIndex(where: { $0.isWhitespace }) {
+            tail = String(tail[tail.index(after: boundary)...])
+        }
+        return tail
+    }
+
     /// Normalize a model response into a short, insertable continuation.
     static func clean(_ raw: String, context: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if let firstLine = s.split(separator: "\n").first { s = String(firstLine) }
         s = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”«» "))
+        let metaPrefixes = ["respuesta:", "continuación:", "continuacion:",
+                            "no hay suficiente contexto", "no puedo", "texto:"]
+        guard !metaPrefixes.contains(where: { s.lowercased().hasPrefix($0) }) else {
+            return nil
+        }
 
         // Models sometimes echo the prompt: drop the longest overlap between
         // the end of the context and the start of the response.
@@ -68,15 +89,25 @@ enum CompletionCleaner {
     }
 
     static let instructions = """
-    Completa frases. El usuario da un texto incompleto y tú respondes ÚNICAMENTE \
-    las siguientes 3-8 palabras que continuarían el texto de forma natural, en el \
-    mismo idioma del texto. Nunca preguntes, nunca expliques, nunca repitas el texto.
+    Eres un autocompletado de escritura, no un asistente que responde al usuario. \
+    Continúa el texto como si fueras su autor. Devuelve ÚNICAMENTE la continuación \
+    más probable y útil, en el mismo idioma, tono y persona gramatical.
+
+    Prioriza completar la intención concreta ya visible: una petición, explicación, \
+    lista, mensaje o fragmento de código. Prefiere detalles específicos sugeridos \
+    por el contexto frente a frases genéricas. Escribe entre 2 y 10 palabras; puedes \
+    terminar antes si completas claramente la idea. No repitas el texto, no lo \
+    contestes, no añadas comillas, etiquetas ni explicaciones.
 
     Ejemplos:
     Texto: "quiero que revises el código y"
     Respuesta: me digas si hay errores
     Texto: "create a new branch and"
     Respuesta: push the changes to it
+    Texto: "El problema principal de esta propuesta es"
+    Respuesta: que no define cómo mediremos el impacto
+    Texto: "Podemos quedar mañana a las"
+    Respuesta: diez y revisar juntos los cambios
     """
 
     static let wordInstructions = """
@@ -138,8 +169,8 @@ final class SystemModelProvider: CompletionProvider {
 
     func complete(context: String) async throws -> String? {
         let session = LanguageModelSession(instructions: CompletionCleaner.instructions)
-        let options = GenerationOptions(temperature: 0.3, maximumResponseTokens: 16)
-        let prompt = "Texto: \"\(context)\"\nRespuesta:"
+        let options = GenerationOptions(temperature: 0.15, maximumResponseTokens: 24)
+        let prompt = "Texto hasta el cursor:\n<<<\(context)>>>\nContinuación:"
         let start = Date()
         let response = try await session.respond(to: prompt, options: options)
         let cleaned = CompletionCleaner.clean(response.content, context: context)
@@ -198,9 +229,9 @@ final class OllamaProvider: CompletionProvider {
 
     func complete(context: String) async throws -> String? {
         let prompt = CompletionCleaner.instructions
-            + "\n\nTexto: \"\(context)\"\nRespuesta:"
+            + "\n\nTexto hasta el cursor:\n<<<\(context)>>>\nContinuación:"
         let start = Date()
-        guard let response = try await generate(prompt: prompt, maxTokens: 16, temperature: 0.3) else { return nil }
+        guard let response = try await generate(prompt: prompt, maxTokens: 24, temperature: 0.15) else { return nil }
         let cleaned = CompletionCleaner.clean(response, context: context)
         QueryLog.shared.record(kind: "✦ frase", isPhrase: true,
                                engine: "Ollama (\(Settings.ollamaModel))",

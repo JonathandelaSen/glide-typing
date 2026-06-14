@@ -9,6 +9,7 @@ final class ModelConsole {
     private let statsField = NSTextField(labelWithString: "sin consultas todavía")
 
     private var phraseCount = 0, phraseMs = 0, phraseEmpty = 0
+    private var phraseAccepted = 0
     private var wordCount = 0, wordMs = 0, wordEmpty = 0
     private var queries: [ModelQuery] = []
 
@@ -116,6 +117,7 @@ final class ModelConsole {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         queries.removeAll()
         phraseCount = 0; phraseMs = 0; phraseEmpty = 0
+        phraseAccepted = 0
         wordCount = 0; wordMs = 0; wordEmpty = 0
         statsField.stringValue = "sin consultas todavía"
     }
@@ -152,10 +154,16 @@ final class ModelConsole {
         }
     }
 
+    func recordPhraseAccepted() {
+        phraseAccepted += 1
+        updateStats()
+    }
+
     private func updateStats() {
         var parts: [String] = []
         if phraseCount > 0 {
-            parts.append("✦ n=\(phraseCount) μ=\(phraseMs / phraseCount)ms vacías=\(phraseEmpty * 100 / phraseCount)%")
+            let shown = max(1, phraseCount - phraseEmpty)
+            parts.append("✦ n=\(phraseCount) μ=\(phraseMs / phraseCount)ms vacías=\(phraseEmpty * 100 / phraseCount)% aceptadas=\(phraseAccepted * 100 / shown)%")
         }
         if wordCount > 0 {
             parts.append("palabra n=\(wordCount) μ=\(wordMs / wordCount)ms vacías=\(wordEmpty * 100 / wordCount)%")
