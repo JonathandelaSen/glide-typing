@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var recentText = ""
     /// Composer mode: text is composed in the panel and inserted on demand.
     private var composerEnabled = Settings.composerMode
+    private var composerDeliveryInProgress = false
     /// The composer text view is the source of truth in composer mode.
     private var composerText: String { keyboardView?.composerString ?? "" }
     private var completionProvider: CompletionProvider?
@@ -211,30 +212,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     /// Type the composer buffer into the focused app (optionally with Return).
     private func flushComposerToApp(pressReturn: Bool) {
+        guard !composerDeliveryInProgress else {
+            keyboardView.flash("Buscando campo de texto…")
+            return
+        }
         let text = composerText
-        history?.record(text)
-        keyboardView.composerClear()
-        resetInsertionState()
-        keyboardView.candidates = []
-        keyboardView.predictions = []
-        keyboardView.ghost = nil
-
+        composerDeliveryInProgress = true
         if panel.isKeyWindow {
             // The composer was clicked, so our panel holds key status and the
             // synthetic keystrokes would land in it. Hand key back to the target
             // app by dropping first responder and reactivating it — no orderOut,
             // so the panel doesn't flash out and back.
             panel.makeFirstResponder(nil)
-            lastExternalApp?.activate()
         }
-        // Always defer injection by the same fixed delay. With the two-step
-        // Enter (first press inserts text, second press submits a Return), two
-        // rapid presses would otherwise race: the immediate Return could land
-        // before the delayed text. A uniform delay keeps them in press order.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            if !text.isEmpty { TextInjector.type(text) }
-            if pressReturn { TextInjector.pressKey(TextInjector.returnKey) }
+        lastExternalApp?.activate()
+        deliverComposer(text, pressReturn: pressReturn, attemptsRemaining: 12)
+    }
+
+    private func deliverComposer(_ text: String, pressReturn: Bool, attemptsRemaining: Int) {
+        guard attemptsRemaining > 0 else {
+            composerDeliveryInProgress = false
+            keyboardView.flash("Selecciona un campo de texto")
+            return
         }
+        guard FocusedFieldReader.hasEditableTextTarget(in: lastExternalApp) else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.deliverComposer(text, pressReturn: pressReturn,
+                                      attemptsRemaining: attemptsRemaining - 1)
+            }
+            return
+        }
+
+        if !text.isEmpty { TextInjector.type(text) }
+        if pressReturn { TextInjector.pressKey(TextInjector.returnKey) }
+        composerDeliveryInProgress = false
+        history?.record(text)
+        if composerText == text {
+            keyboardView.composerClear()
+        } else {
+            keyboardView.flash("Enviado; cambios nuevos conservados")
+        }
+        resetInsertionState()
+        keyboardView.candidates = []
+        keyboardView.predictions = []
+        keyboardView.ghost = nil
     }
 
     /// Snapshot used to discard stale async results.

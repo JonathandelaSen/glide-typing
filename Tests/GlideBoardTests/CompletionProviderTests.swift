@@ -1,7 +1,19 @@
 import XCTest
+import ApplicationServices
 @testable import GlideBoard
 
 final class CompletionProviderTests: XCTestCase {
+    func testFocusedTextTargetRecognizesEditableRoles() {
+        XCTAssertTrue(FocusedFieldReader.isEditableTextTarget(role: kAXTextFieldRole as String,
+                                                              supportsTextSelection: false))
+        XCTAssertTrue(FocusedFieldReader.isEditableTextTarget(role: kAXTextAreaRole as String,
+                                                              supportsTextSelection: false))
+        XCTAssertTrue(FocusedFieldReader.isEditableTextTarget(role: kAXWebAreaRole as String,
+                                                              supportsTextSelection: true))
+        XCTAssertFalse(FocusedFieldReader.isEditableTextTarget(role: kAXButtonRole as String,
+                                                               supportsTextSelection: false))
+    }
+
     func testContextForModelPreservesTrailingWhitespace() {
         XCTAssertEqual(CompletionCleaner.contextForModel("vamos a revisar esto "), "vamos a revisar esto ")
     }
@@ -22,6 +34,20 @@ final class CompletionProviderTests: XCTestCase {
         XCTAssertEqual(
             CompletionCleaner.clean("revisar el código antes de enviarlo", context: "Tenemos que revisar el código"),
             "antes de enviarlo"
+        )
+    }
+
+    func testCleanerRemovesPromptDelimitersFromContinuation() {
+        XCTAssertEqual(
+            CompletionCleaner.clean("<<<necesitamos>>><<<soluciones>>>", context: "fox ese"),
+            "necesitamos soluciones"
+        )
+    }
+
+    func testCleanerRemovesPromptDelimitersWhileDroppingEcho() {
+        XCTAssertEqual(
+            CompletionCleaner.clean("fox ese <<<necesitamos>>> <<<soluciones>>>", context: "fox ese"),
+            "necesitamos soluciones"
         )
     }
 }

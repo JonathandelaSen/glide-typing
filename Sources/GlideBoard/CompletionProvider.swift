@@ -62,7 +62,9 @@ enum CompletionCleaner {
     static func clean(_ raw: String, context: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if let firstLine = s.split(separator: "\n").first { s = String(firstLine) }
-        s = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”«» "))
+        s = s.replacingOccurrences(of: "<<<", with: " ")
+            .replacingOccurrences(of: ">>>", with: " ")
+        s = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”«»<> "))
         let metaPrefixes = ["respuesta:", "continuación:", "continuacion:",
                             "no hay suficiente contexto", "no puedo", "texto:"]
         guard !metaPrefixes.contains(where: { s.lowercased().hasPrefix($0) }) else {
@@ -170,7 +172,7 @@ final class SystemModelProvider: CompletionProvider {
     func complete(context: String) async throws -> String? {
         let session = LanguageModelSession(instructions: CompletionCleaner.instructions)
         let options = GenerationOptions(temperature: 0.15, maximumResponseTokens: 24)
-        let prompt = "Texto hasta el cursor:\n<<<\(context)>>>\nContinuación:"
+        let prompt = "Texto hasta el cursor:\n\(context)\n\nContinuación:"
         let start = Date()
         let response = try await session.respond(to: prompt, options: options)
         let cleaned = CompletionCleaner.clean(response.content, context: context)
@@ -229,7 +231,7 @@ final class OllamaProvider: CompletionProvider {
 
     func complete(context: String) async throws -> String? {
         let prompt = CompletionCleaner.instructions
-            + "\n\nTexto hasta el cursor:\n<<<\(context)>>>\nContinuación:"
+            + "\n\nTexto hasta el cursor:\n\(context)\n\nContinuación:"
         let start = Date()
         guard let response = try await generate(prompt: prompt, maxTokens: 24, temperature: 0.15) else { return nil }
         let cleaned = CompletionCleaner.clean(response, context: context)
