@@ -20,6 +20,9 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardView(_ view: KeyboardView, didRepeatBackspaceByWord byWord: Bool)
     /// Insert the composer buffer into the focused app.
     func keyboardView(_ view: KeyboardView, didRequestInsert pressReturn: Bool)
+    /// Copy the composer buffer to the clipboard (used when there is no
+    /// editable text target to inject into).
+    func keyboardViewDidRequestCopy(_ view: KeyboardView)
     /// The composer grew or shrank: the panel must resize.
     func keyboardViewDidResize(_ view: KeyboardView)
 }
@@ -90,6 +93,11 @@ final class KeyboardView: NSView {
             updateComposerHeight()
             needsDisplay = true
         }
+    }
+    /// Whether the focused app currently has an editable text field to inject
+    /// into. When false the composer's action chip becomes a copy button.
+    var hasTextTarget = true {
+        didSet { if oldValue != hasTextTarget { needsDisplay = true } }
     }
     /// Height of the top row — grows with the composer text (up to ~4 lines).
     private(set) var topRowHeight: CGFloat = KeyboardView.ghostHeight
@@ -396,6 +404,9 @@ final class KeyboardView: NSView {
     /// "Insert into app" chip at the right end of the composer row.
     private var insertChipRect: CGRect? {
         guard composerEnabled, let row = ghostRect else { return nil }
+        // Without a text target the chip copies instead of inserting, so it is
+        // pointless with an empty buffer.
+        if !hasTextTarget && composerString.isEmpty { return nil }
         return CGRect(x: row.maxX - 40, y: row.minY + 3, width: 36, height: row.height - 6)
     }
 
@@ -460,9 +471,14 @@ final class KeyboardView: NSView {
         // Composer row: insert chip, or click to accept the inline ghost.
         if let rect = ghostRect, rect.contains(p) {
             if let chip = insertChipRect, chip.insetBy(dx: -3, dy: -3).contains(p) {
-                // With composed text: insert it without submitting. With an
-                // empty buffer: submit a Return in the target app.
-                delegate?.keyboardView(self, didRequestInsert: composerString.isEmpty)
+                if !hasTextTarget {
+                    // No field to inject into: copy the buffer to the clipboard.
+                    delegate?.keyboardViewDidRequestCopy(self)
+                } else {
+                    // With composed text: insert it without submitting. With an
+                    // empty buffer: submit a Return in the target app.
+                    delegate?.keyboardView(self, didRequestInsert: composerString.isEmpty)
+                }
             } else if let ghost {
                 delegate?.keyboardView(self, didPickGhost: ghost)
             }
@@ -859,7 +875,7 @@ final class KeyboardView: NSView {
         return abs(winding) > 4.4 // ~250° of rotation
     }
 
-    private func classifySwipe(_ v: CGVector) {
+    func classifySwipe(_ v: CGVector) {
         guard hypot(v.dx, v.dy) > 24 else { return }
         // Vertical axis empirically calibrated: scroll deltas report the
         // opposite sign of the finger motion on this setup.
@@ -1168,14 +1184,18 @@ final class KeyboardView: NSView {
         }
 
         if let chip {
-            NSColor(calibratedRed: 0.18, green: 0.42, blue: 0.95, alpha: 0.5).setFill()
+            let copyMode = !hasTextTarget
+            let tint = copyMode
+                ? NSColor(calibratedRed: 0.35, green: 0.35, blue: 0.4, alpha: 0.6)
+                : NSColor(calibratedRed: 0.18, green: 0.42, blue: 0.95, alpha: 0.5)
+            tint.setFill()
             NSBezierPath(roundedRect: chip, xRadius: 6, yRadius: 6).fill()
-            let arrow = NSAttributedString(string: "↪", attributes: [
+            let glyph = NSAttributedString(string: copyMode ? "⧉" : "↪", attributes: [
                 .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
                 .foregroundColor: NSColor.white
             ])
-            let aSize = arrow.size()
-            arrow.draw(at: CGPoint(x: chip.midX - aSize.width / 2, y: chip.midY - aSize.height / 2))
+            let gSize = glyph.size()
+            glyph.draw(at: CGPoint(x: chip.midX - gSize.width / 2, y: chip.midY - gSize.height / 2))
         }
     }
 

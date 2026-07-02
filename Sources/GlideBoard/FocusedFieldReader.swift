@@ -5,6 +5,16 @@ import ApplicationServices
 /// API, so the completion model sees the actual text — including anything
 /// typed with the physical keyboard or already present in the field.
 enum FocusedFieldReader {
+    enum TextTargetStatus {
+        case editable
+        case notEditable
+        case unknown
+
+        var canAttemptInsertion: Bool {
+            self != .notEditable
+        }
+    }
+
     /// Electron/Chromium apps don't build their accessibility tree until an
     /// assistive client asks for it. Setting AXManualAccessibility turns it
     /// on (documented Electron behavior). Remember which pids we've enabled.
@@ -29,25 +39,42 @@ enum FocusedFieldReader {
             || role == (kAXComboBoxRole as String)
     }
 
+    static func textTargetStatus(role: String?, supportsTextSelection: Bool) -> TextTargetStatus {
+        guard let role else { return .unknown }
+        return isEditableTextTarget(role: role, supportsTextSelection: supportsTextSelection)
+            ? .editable
+            : .notEditable
+    }
+
     /// Whether the target app's focused element can currently receive text.
-    static func hasEditableTextTarget(in app: NSRunningApplication?) -> Bool {
-        guard let app, !app.isTerminated else { return false }
+    static func textTargetStatus(in app: NSRunningApplication?) -> TextTargetStatus {
+        guard let app, !app.isTerminated else { return .unknown }
         enableElectronAccessibilityIfNeeded(in: app)
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString,
+        guard AXUIElementCopyAttributeValue(appElement,
+                                            kAXFocusedUIElementAttribute as CFString,
                                             &focusedRef) == .success,
-              let focusedRef else { return false }
+              let focusedRef else { return .unknown }
         let element = focusedRef as! AXUIElement
 
         var roleRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
-        var attributes: CFArray?
-        let attributesResult = AXUIElementCopyAttributeNames(element, &attributes)
-        let names = attributes as? [String] ?? []
-        return isEditableTextTarget(role: roleRef as? String,
-                                    supportsTextSelection: attributesResult == .success
-                                        && names.contains(kAXSelectedTextRangeAttribute as String))
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success else {
+            return .unknown
+        }
+
+        var rangeRef: CFTypeRef?
+        let supportsTextSelection = AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeRef
+        ) == .success
+        return textTargetStatus(role: roleRef as? String,
+                                supportsTextSelection: supportsTextSelection)
+    }
+
+    static func hasEditableTextTarget(in app: NSRunningApplication?) -> Bool {
+        textTargetStatus(in: app).canAttemptInsertion
     }
 
     /// Text before the caret in the focused UI element, or nil if the app

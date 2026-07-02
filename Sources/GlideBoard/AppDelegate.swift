@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var lastExternalApp: NSRunningApplication?
     private var history: TextHistoryConsole?
     private var toggleMenuItem: NSMenuItem?
+    /// Polls whether the focused app has an editable field, so the composer
+    /// chip can switch between "insert" and "copy".
+    private var targetPollTimer: Timer?
 
     private var language: Language = Settings.language
     /// Combined Spanish + English + user-learned words: glides and
@@ -40,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     /// Composer mode: text is composed in the panel and inserted on demand.
     private var composerEnabled = Settings.composerMode
     private var composerDeliveryInProgress = false
+    /// A Return press that arrived while a delivery was still in flight
+    /// (two-step Enter); sent right after the text lands.
+    private var pendingReturn = false
     /// The composer text view is the source of truth in composer mode.
     private var composerText: String { keyboardView?.composerString ?? "" }
     private var completionProvider: CompletionProvider?
@@ -77,6 +83,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         applyHotKey()
         applyCompletionEngine()
         showPanel()
+        startTargetPolling()
+    }
+
+    /// Keep `keyboardView.hasTextTarget` in sync with the focused field so the
+    /// composer chip shows "copy" when there's nowhere to inject text.
+    private func startTargetPolling() {
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self, self.panel.isVisible else { return }
+            // While we're mid-delivery the target app is being activated; don't
+            // fight that transient state.
+            guard !self.composerDeliveryInProgress else { return }
+            self.keyboardView.hasTextTarget =
+                FocusedFieldReader.textTargetStatus(in: self.lastExternalApp).canAttemptInsertion
+        }
+        RunLoop.main.add(t, forMode: .common)
+        targetPollTimer = t
     }
 
     private func requestAccessibilityIfNeeded() {
@@ -213,7 +235,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     /// Type the composer buffer into the focused app (optionally with Return).
     private func flushComposerToApp(pressReturn: Bool) {
         guard !composerDeliveryInProgress else {
-            keyboardView.flash("Buscando campo de texto…")
+            if pressReturn {
+                // Two-step Enter: the Return press arrived while the text is
+                // still being delivered. Queue it so it lands after the text
+                // instead of being dropped.
+                pendingReturn = true
+            } else {
+                keyboardView.flash("Buscando campo de texto…")
+            }
             return
         }
         let text = composerText
@@ -225,26 +254,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             // so the panel doesn't flash out and back.
             panel.makeFirstResponder(nil)
         }
-        lastExternalApp?.activate()
+        guard let target = lastExternalApp, !target.isTerminated else {
+            composerDeliveryInProgress = false
+            keyboardView.flash("Selecciona un campo de texto")
+            return
+        }
+        target.activate()
         deliverComposer(text, pressReturn: pressReturn, attemptsRemaining: 12)
     }
 
     private func deliverComposer(_ text: String, pressReturn: Bool, attemptsRemaining: Int) {
         guard attemptsRemaining > 0 else {
             composerDeliveryInProgress = false
+            pendingReturn = false
             keyboardView.flash("Selecciona un campo de texto")
             return
         }
-        guard FocusedFieldReader.hasEditableTextTarget(in: lastExternalApp) else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        let retry = { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 self?.deliverComposer(text, pressReturn: pressReturn,
                                       attemptsRemaining: attemptsRemaining - 1)
             }
+        }
+        // activate() is asynchronous: until the target is actually frontmost,
+        // the synthetic keystrokes would land in whatever app still holds key
+        // focus (often our own panel, which just resigned its first responder)
+        // and vanish. The per-app AX focus check below can't detect this — an
+        // app reports a focused element even while in the background.
+        guard let target = lastExternalApp, !target.isTerminated, target.isActive else {
+            retry()
+            return
+        }
+        switch FocusedFieldReader.textTargetStatus(in: target) {
+        case .editable, .unknown:
+            break
+        case .notEditable:
+            retry()
             return
         }
 
         if !text.isEmpty { TextInjector.type(text) }
-        if pressReturn { TextInjector.pressKey(TextInjector.returnKey) }
+        if pressReturn || pendingReturn { TextInjector.pressKey(TextInjector.returnKey) }
+        pendingReturn = false
         composerDeliveryInProgress = false
         history?.record(text)
         if composerText == text {
@@ -740,7 +791,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
                 view.flash("✓")
                 keyboardView(view, didPickPrediction: 0)
             } else {
-                view.flash("✓?") // nothing to accept yet
+                // Nothing to accept: a swipe up here means "submit" (Return).
+                view.flash("↩︎")
+                keyboardView(view, didRequestInsert: true)
             }
         }
     }
@@ -751,9 +804,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     func keyboardView(_ view: KeyboardView, didRequestInsert pressReturn: Bool) {
-        guard composerEnabled else { return }
+        guard composerEnabled else {
+            // Direct-typing mode: there's no buffer to flush, so honor a
+            // requested Return by sending it to the focused app. activate()
+            // is asynchronous — give the target time to become frontmost or
+            // the keystroke lands in our own panel.
+            if pressReturn {
+                lastExternalApp?.activate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    TextInjector.pressKey(TextInjector.returnKey)
+                }
+            }
+            return
+        }
         view.flash("↪")
         flushComposerToApp(pressReturn: pressReturn)
+    }
+
+    func keyboardViewDidRequestCopy(_ view: KeyboardView) {
+        let text = composerText
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        history?.record(text)
+        view.flash("copiado")
     }
 
     func keyboardViewDidResize(_ view: KeyboardView) {

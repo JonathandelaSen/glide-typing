@@ -14,6 +14,18 @@ final class CompletionProviderTests: XCTestCase {
                                                                supportsTextSelection: false))
     }
 
+    func testUnknownTextTargetStillAllowsInsertionAttempt() {
+        XCTAssertTrue(FocusedFieldReader.TextTargetStatus.unknown.canAttemptInsertion)
+        XCTAssertTrue(FocusedFieldReader.textTargetStatus(role: nil,
+                                                          supportsTextSelection: false).canAttemptInsertion)
+    }
+
+    func testKnownNonEditableTargetBlocksInsertionAttempt() {
+        XCTAssertFalse(FocusedFieldReader.TextTargetStatus.notEditable.canAttemptInsertion)
+        XCTAssertFalse(FocusedFieldReader.textTargetStatus(role: kAXButtonRole as String,
+                                                           supportsTextSelection: false).canAttemptInsertion)
+    }
+
     func testContextForModelPreservesTrailingWhitespace() {
         XCTAssertEqual(CompletionCleaner.contextForModel("vamos a revisar esto "), "vamos a revisar esto ")
     }
