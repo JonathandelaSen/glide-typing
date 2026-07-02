@@ -303,6 +303,21 @@ final class TextHistoryConsole {
     private let stack = NSStackView()
     private var entries: [(text: String, date: Date)] = []
 
+    /// Every entry is also appended to disk, so sent text survives app
+    /// restarts and any delivery failure — it must never be unrecoverable.
+    private struct StoredEntry: Codable {
+        let date: Date
+        let text: String
+    }
+
+    private static let logURL: URL = {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory,
+                                           in: .userDomainMask)[0]
+            .appendingPathComponent("GlideBoard", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("typed-history.jsonl")
+    }()
+
     private static let timeFormat: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
@@ -403,6 +418,11 @@ final class TextHistoryConsole {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let entry = (text: trimmed, date: Date())
+        persist(entry)
+        append(entry)
+    }
+
+    private func append(_ entry: (text: String, date: Date)) {
         entries.append(entry)
         let card = makeCard(entry)
         stack.insertArrangedSubview(card, at: 0)
@@ -410,6 +430,30 @@ final class TextHistoryConsole {
         while stack.arrangedSubviews.count > 100 {
             stack.arrangedSubviews.last?.removeFromSuperview()
             if !entries.isEmpty { entries.removeFirst() }
+        }
+    }
+
+    private func persist(_ entry: (text: String, date: Date)) {
+        guard var line = try? JSONEncoder().encode(StoredEntry(date: entry.date,
+                                                               text: entry.text)) else { return }
+        line.append(0x0A)
+        let url = Self.logURL
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: line)
+        } else {
+            try? line.write(to: url)
+        }
+    }
+
+    /// Reload the most recent persisted entries (newest ends up on top).
+    func loadPersisted(limit: Int = 100) {
+        guard let contents = try? String(contentsOf: Self.logURL, encoding: .utf8) else { return }
+        let decoder = JSONDecoder()
+        for line in contents.split(separator: "\n").suffix(limit) {
+            guard let stored = try? decoder.decode(StoredEntry.self, from: Data(line.utf8)) else { continue }
+            append((text: stored.text, date: stored.date))
         }
     }
 

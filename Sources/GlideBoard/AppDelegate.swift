@@ -46,6 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     /// A Return press that arrived while a delivery was still in flight
     /// (two-step Enter); sent right after the text lands.
     private var pendingReturn = false
+    /// The panel was ordered out to hand key focus back to the target app;
+    /// restore it when the delivery settles.
+    private var panelHiddenForDelivery = false
     /// The composer text view is the source of truth in composer mode.
     private var composerText: String { keyboardView?.composerString ?? "" }
     private var completionProvider: CompletionProvider?
@@ -77,6 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
         buildPanel()
         buildStatusItem()
+        // Created eagerly so every sent text is recorded (and persisted) even
+        // if the console window is never opened.
+        history = TextHistoryConsole()
+        history?.loadPersisted()
 
         QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
         QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
@@ -245,29 +252,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             }
             return
         }
-        let text = composerText
-        composerDeliveryInProgress = true
-        if panel.isKeyWindow {
-            // The composer was clicked, so our panel holds key status and the
-            // synthetic keystrokes would land in it. Hand key back to the target
-            // app by dropping first responder and reactivating it — no orderOut,
-            // so the panel doesn't flash out and back.
-            panel.makeFirstResponder(nil)
-        }
         guard let target = lastExternalApp, !target.isTerminated else {
-            composerDeliveryInProgress = false
             keyboardView.flash("Selecciona un campo de texto")
             return
+        }
+        let text = composerText
+        // Safety net: persist the text BEFORE any delivery step can lose it.
+        history?.record(text)
+        composerDeliveryInProgress = true
+        if panel.isKeyWindow {
+            // The composer was clicked, so our nonactivating panel holds key
+            // focus — while the target often remains the *active* app, which
+            // makes activate() a no-op. The window server keeps routing
+            // keyboard events to the key panel, so the synthetic keystrokes
+            // would come back to us and vanish. Dropping first responder is
+            // not enough: the panel must leave the screen for key focus to
+            // return to the target. It reappears when delivery settles.
+            panel.makeFirstResponder(nil)
+            panel.orderOut(nil)
+            panelHiddenForDelivery = true
         }
         target.activate()
         deliverComposer(text, pressReturn: pressReturn, attemptsRemaining: 12)
     }
 
+    /// Delivery finished or gave up: restore the panel if it was hidden.
+    private func finishDelivery() {
+        composerDeliveryInProgress = false
+        pendingReturn = false
+        if panelHiddenForDelivery {
+            panelHiddenForDelivery = false
+            panel.orderFrontRegardless()
+        }
+    }
+
     private func deliverComposer(_ text: String, pressReturn: Bool, attemptsRemaining: Int) {
         guard attemptsRemaining > 0 else {
-            composerDeliveryInProgress = false
-            pendingReturn = false
-            keyboardView.flash("Selecciona un campo de texto")
+            finishDelivery()
+            keyboardView.flash("No entregado; el texto sigue aquí")
             return
         }
         let retry = { [weak self] in
@@ -276,12 +298,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
                                       attemptsRemaining: attemptsRemaining - 1)
             }
         }
-        // activate() is asynchronous: until the target is actually frontmost,
-        // the synthetic keystrokes would land in whatever app still holds key
-        // focus (often our own panel, which just resigned its first responder)
-        // and vanish. The per-app AX focus check below can't detect this — an
-        // app reports a focused element even while in the background.
-        guard let target = lastExternalApp, !target.isTerminated, target.isActive else {
+        // activate() is asynchronous, and per-app AX focus can't detect where
+        // keystrokes actually go — an app reports a focused element even while
+        // in the background. Require the whole chain: target frontmost, our
+        // panel no longer key, and system keyboard focus provably not ours.
+        guard let target = lastExternalApp, !target.isTerminated, target.isActive,
+              !panel.isKeyWindow else {
+            retry()
+            return
+        }
+        if FocusedFieldReader.systemFocusPid() == ProcessInfo.processInfo.processIdentifier {
             retry()
             return
         }
@@ -295,9 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
         if !text.isEmpty { TextInjector.type(text) }
         if pressReturn || pendingReturn { TextInjector.pressKey(TextInjector.returnKey) }
-        pendingReturn = false
-        composerDeliveryInProgress = false
-        history?.record(text)
+        finishDelivery()
         if composerText == text {
             keyboardView.composerClear()
         } else {

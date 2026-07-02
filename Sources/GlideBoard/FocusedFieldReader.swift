@@ -77,6 +77,19 @@ enum FocusedFieldReader {
         textTargetStatus(in: app).canAttemptInsertion
     }
 
+    /// pid of the process owning the system-wide focused UI element — where
+    /// keyboard events are actually routed — or nil if AX can't tell.
+    static func systemFocusPid() -> pid_t? {
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(),
+                                            kAXFocusedUIElementAttribute as CFString,
+                                            &focusedRef) == .success,
+              let focusedRef else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(focusedRef as! AXUIElement, &pid) == .success else { return nil }
+        return pid
+    }
+
     /// Text before the caret in the focused UI element, or nil if the app
     /// doesn't expose it (then the caller falls back to its own transcript).
     static func textBeforeCursor(maxLength: Int = 450) -> String? {
