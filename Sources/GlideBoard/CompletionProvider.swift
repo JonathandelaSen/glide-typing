@@ -24,6 +24,8 @@ final class QueryLog {
     var currentSource = "—"
     var sink: ((ModelQuery) -> Void)?
     var phraseAcceptedSink: (() -> Void)?
+    /// Feeds the eval exporter: every query is a potential eval case.
+    var evalSink: ((ModelQuery) -> Void)?
 
     func record(kind: String, isPhrase: Bool, engine: String, ms: Int,
                 context: String, raw: String, cleaned: String) {
@@ -31,7 +33,10 @@ final class QueryLog {
                                source: currentSource, context: context,
                                raw: raw.trimmingCharacters(in: .whitespacesAndNewlines),
                                cleaned: cleaned)
-        DispatchQueue.main.async { self.sink?(query) }
+        DispatchQueue.main.async {
+            self.sink?(query)
+            self.evalSink?(query)
+        }
     }
 
     func recordPhraseAccepted() {

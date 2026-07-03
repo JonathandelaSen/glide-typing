@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     /// The most recent non-self frontmost app — the one receiving injected text.
     private var lastExternalApp: NSRunningApplication?
     private var history: TextHistoryConsole?
+    private var evalExporter: EvalExporter?
     private var toggleMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
@@ -84,9 +85,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         // if the console window is never opened.
         history = TextHistoryConsole()
         history?.loadPersisted()
+        history?.onSend = { [weak self] text in self?.sendHistoryText(text) }
 
         QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
         QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
+
+        // Eval workspace (<repo>/evals): phrase queries become cases once the
+        // sent text reveals what the user actually wrote after them.
+        evalExporter = EvalExporter()
+        QueryLog.shared.evalSink = { [weak self] query in self?.evalExporter?.capture(query) }
+        evalExporter?.bootstrapFromHistory(TextHistoryConsole.persistedLogURL)
         applyHotKey()
         applyCompletionEngine()
         showPanel()
@@ -259,6 +267,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let text = composerText
         // Safety net: persist the text BEFORE any delivery step can lose it.
         history?.record(text)
+        // The sent text is the ground truth for pending completion captures.
+        evalExporter?.finalize(sentText: text)
         composerDeliveryInProgress = true
         if panel.isKeyWindow {
             // The composer was clicked, so our nonactivating panel holds key
@@ -276,6 +286,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         deliverComposer(text, pressReturn: pressReturn, attemptsRemaining: 12)
     }
 
+    /// Re-send a history entry to the focused app. Uses the same reliable
+    /// delivery path as the composer but leaves the composer untouched and
+    /// does not re-record the entry (it is already in the history).
+    private func sendHistoryText(_ text: String) {
+        guard !composerDeliveryInProgress else {
+            keyboardView.flash("Entrega en curso…")
+            return
+        }
+        guard let target = lastExternalApp, !target.isTerminated else {
+            keyboardView.flash("Selecciona un campo de texto")
+            return
+        }
+        composerDeliveryInProgress = true
+        if panel.isKeyWindow || history?.panel.isKeyWindow == true {
+            // Same nonactivating-panel gotcha as flushComposerToApp: while any
+            // of our panels holds key focus, synthetic keystrokes route back
+            // to us. The history panel is a child of the keyboard panel, so
+            // ordering the parent out takes both off screen.
+            panel.makeFirstResponder(nil)
+            history?.panel.makeFirstResponder(nil)
+            panel.orderOut(nil)
+            panelHiddenForDelivery = true
+        }
+        target.activate()
+        deliverComposer(text, pressReturn: false, attemptsRemaining: 12,
+                        fromHistory: true)
+    }
+
     /// Delivery finished or gave up: restore the panel if it was hidden.
     private func finishDelivery() {
         composerDeliveryInProgress = false
@@ -286,16 +324,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
     }
 
-    private func deliverComposer(_ text: String, pressReturn: Bool, attemptsRemaining: Int) {
+    private func deliverComposer(_ text: String, pressReturn: Bool, attemptsRemaining: Int,
+                                 fromHistory: Bool = false) {
         guard attemptsRemaining > 0 else {
             finishDelivery()
-            keyboardView.flash("No entregado; el texto sigue aquí")
+            keyboardView.flash(fromHistory ? "No entregado" : "No entregado; el texto sigue aquí")
             return
         }
         let retry = { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 self?.deliverComposer(text, pressReturn: pressReturn,
-                                      attemptsRemaining: attemptsRemaining - 1)
+                                      attemptsRemaining: attemptsRemaining - 1,
+                                      fromHistory: fromHistory)
             }
         }
         // activate() is asynchronous, and per-app AX focus can't detect where
@@ -322,6 +362,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         if !text.isEmpty { TextInjector.type(text) }
         if pressReturn || pendingReturn { TextInjector.pressKey(TextInjector.returnKey) }
         finishDelivery()
+        if fromHistory {
+            keyboardView.flash("Enviado desde el histórico")
+            return
+        }
         if composerText == text {
             keyboardView.composerClear()
         } else {
@@ -544,12 +588,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     @objc private func openHistory() {
         if history == nil {
             history = TextHistoryConsole()
+            history?.onSend = { [weak self] text in self?.sendHistoryText(text) }
         }
         if history!.isVisible {
             history!.close()
         } else {
             history!.attach(to: panel)
         }
+        keyboardView.historyVisible = history!.isVisible
     }
 
     // MARK: - Settings
@@ -600,10 +646,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
         if let history, history.isVisible {
             history.attach(to: panel)
+            keyboardView.historyVisible = true
         }
     }
 
     // MARK: - KeyboardViewDelegate
+
+    func keyboardViewDidToggleHistory(_ view: KeyboardView) {
+        openHistory()
+    }
 
     func keyboardView(_ view: KeyboardView, didRepeatBackspaceByWord byWord: Bool) {
         if byWord {

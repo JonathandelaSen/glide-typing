@@ -25,6 +25,8 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardViewDidRequestCopy(_ view: KeyboardView)
     /// The composer grew or shrank: the panel must resize.
     func keyboardViewDidResize(_ view: KeyboardView)
+    /// Show/hide the typed-text history panel.
+    func keyboardViewDidToggleHistory(_ view: KeyboardView)
 }
 
 /// Two-finger swipe directions and their shortcut actions.
@@ -61,7 +63,14 @@ final class KeyboardView: NSView {
     static let baseUnit: CGFloat = 56
     let unit: CGFloat
     static let margin: CGFloat = 10
-    static let handleHeight: CGFloat = 16
+    /// Toolbar strip height: scales with the keyboard but never below a
+    /// comfortably clickable/readable minimum.
+    static func barHeight(unit: CGFloat) -> CGFloat {
+        max(30, 30 * unit / baseUnit)
+    }
+    var barHeight: CGFloat { KeyboardView.barHeight(unit: unit) }
+    /// Toolbar UI scale factor (floored at 1 so small keyboards keep legible buttons).
+    private var uiScale: CGFloat { max(1, unit / KeyboardView.baseUnit) }
     static let ghostHeight: CGFloat = 38
     static let predictionHeight: CGFloat = 30
     static let candidateHeight: CGFloat = 36
@@ -286,8 +295,26 @@ final class KeyboardView: NSView {
     /// Help legend overlay toggled by the "?" button.
     private var showHelp = false
 
+    /// Whether the history panel is currently attached — drawn as an active state.
+    var historyVisible = false {
+        didSet { if oldValue != historyVisible { needsDisplay = true } }
+    }
+
+    /// Toolbar buttons, laid out with the shared uiScale so they stay legible
+    /// at any keyboard size.
+    private var toolbarButtonSize: CGSize { CGSize(width: 34 * uiScale, height: 22 * uiScale) }
+    private var toolbarButtonY: CGFloat { (barHeight - toolbarButtonSize.height) / 2 }
+
     private var helpButtonRect: CGRect {
-        CGRect(x: bounds.width - 26, y: 3, width: 16, height: 16)
+        let s = toolbarButtonSize
+        return CGRect(x: bounds.width - KeyboardView.margin - s.width,
+                      y: toolbarButtonY, width: s.width, height: s.height)
+    }
+
+    private var historyButtonRect: CGRect {
+        let s = toolbarButtonSize
+        return CGRect(x: helpButtonRect.minX - s.width - 6 * uiScale,
+                      y: toolbarButtonY, width: s.width, height: s.height)
     }
 
     override var isFlipped: Bool { true }
@@ -306,7 +333,7 @@ final class KeyboardView: NSView {
 
     static func preferredSize(for layout: KeyboardLayout, unit: CGFloat) -> NSSize {
         NSSize(width: layout.unitColumns * unit + margin * 2,
-               height: handleHeight + ghostHeight + predictionHeight + candidateHeight
+               height: barHeight(unit: unit) + ghostHeight + predictionHeight + candidateHeight
                        + layout.unitRows * unit + margin)
     }
 
@@ -322,14 +349,14 @@ final class KeyboardView: NSView {
     // MARK: - Geometry helpers
 
     private var keysOriginY: CGFloat {
-        KeyboardView.handleHeight + topRowHeight
+        barHeight + topRowHeight
             + KeyboardView.predictionHeight + KeyboardView.candidateHeight
     }
 
     /// Current full size, accounting for the dynamic composer height.
     func currentSize() -> NSSize {
         NSSize(width: layout.unitColumns * unit + KeyboardView.margin * 2,
-               height: KeyboardView.handleHeight + topRowHeight + KeyboardView.predictionHeight
+               height: barHeight + topRowHeight + KeyboardView.predictionHeight
                        + KeyboardView.candidateHeight + layout.unitRows * unit + KeyboardView.margin)
     }
 
@@ -396,7 +423,7 @@ final class KeyboardView: NSView {
     private var ghostRect: CGRect? {
         guard composerEnabled || ghost != nil else { return nil }
         return CGRect(x: KeyboardView.margin,
-                      y: KeyboardView.handleHeight + 2,
+                      y: barHeight + 2,
                       width: bounds.width - KeyboardView.margin * 2,
                       height: topRowHeight - 4)
     }
@@ -412,13 +439,13 @@ final class KeyboardView: NSView {
 
     private var predictionRects: [CGRect] {
         rowRects(count: predictions.count,
-                 y: KeyboardView.handleHeight + topRowHeight + 1,
+                 y: barHeight + topRowHeight + 1,
                  height: KeyboardView.predictionHeight - 2)
     }
 
     private var candidateRects: [CGRect] {
         rowRects(count: candidates.count,
-                 y: KeyboardView.handleHeight + topRowHeight
+                 y: barHeight + topRowHeight
                     + KeyboardView.predictionHeight + 2,
                  height: KeyboardView.candidateHeight - 6)
     }
@@ -431,6 +458,12 @@ final class KeyboardView: NSView {
         // Mode switch (tap ↔ drag) in the handle strip.
         if modeButtonRect.insetBy(dx: -4, dy: -4).contains(p) && !showHelp {
             toggleInputMode()
+            return
+        }
+
+        // Show/hide the typed-text history panel.
+        if historyButtonRect.insetBy(dx: -3, dy: -4).contains(p) && !showHelp {
+            delegate?.keyboardViewDidToggleHistory(self)
             return
         }
 
@@ -463,7 +496,7 @@ final class KeyboardView: NSView {
         }
 
         // Drag handle strip moves the window.
-        if p.y < KeyboardView.handleHeight {
+        if p.y < barHeight {
             window?.performDrag(with: event)
             return
         }
@@ -628,7 +661,8 @@ final class KeyboardView: NSView {
     private var hoverTracing = false
 
     private var modeButtonRect: CGRect {
-        CGRect(x: 10, y: 2, width: 34, height: 16)
+        let s = toolbarButtonSize
+        return CGRect(x: KeyboardView.margin, y: toolbarButtonY, width: s.width, height: s.height)
     }
 
     private func toggleInputMode() {
@@ -963,9 +997,10 @@ final class KeyboardView: NSView {
         let panel = NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14)
         panel.fill()
 
-        // Drag handle
+        // Drag handle, centered in the toolbar strip.
         NSColor(calibratedWhite: 0.45, alpha: 1).setFill()
-        let handle = NSBezierPath(roundedRect: CGRect(x: bounds.midX - 26, y: 6, width: 52, height: 5),
+        let handle = NSBezierPath(roundedRect: CGRect(x: bounds.midX - 26, y: (barHeight - 5) / 2,
+                                                      width: 52, height: 5),
                                   xRadius: 2.5, yRadius: 2.5)
         handle.fill()
 
@@ -989,42 +1024,46 @@ final class KeyboardView: NSView {
         }
 
         drawHelpButton()
+        drawHistoryButton()
         drawModeButton()
         if showHelp { drawHelpOverlay() }
     }
 
-    private func drawModeButton() {
-        let rect = modeButtonRect
-        NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).fill()
+    /// Shared pill style for the toolbar-strip buttons.
+    private func drawToolbarButton(in rect: CGRect, symbol: String, active: Bool) {
+        if active {
+            NSColor(calibratedRed: 0.24, green: 0.34, blue: 0.5, alpha: 1).setFill()
+        } else {
+            NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
+        }
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
+            .font: NSFont.systemFont(ofSize: 13 * uiScale, weight: .semibold),
+            .foregroundColor: active
+                ? NSColor(calibratedRed: 0.75, green: 0.87, blue: 1.0, alpha: 1)
+                : NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
         ]
-        let s = NSAttributedString(string: hoverGlideEnabled ? "∿" : "●", attributes: attrs)
+        let s = NSAttributedString(string: symbol, attributes: attrs)
         let size = s.size()
         s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+    }
+
+    private func drawModeButton() {
+        drawToolbarButton(in: modeButtonRect, symbol: hoverGlideEnabled ? "∿" : "●", active: false)
+    }
+
+    private func drawHistoryButton() {
+        drawToolbarButton(in: historyButtonRect, symbol: "⟲", active: historyVisible)
     }
 
     private func drawHelpButton() {
-        let rect = helpButtonRect
-        NSColor(calibratedWhite: showHelp ? 0.55 : 0.35, alpha: 1).setStroke()
-        let circle = NSBezierPath(ovalIn: rect)
-        circle.lineWidth = 1.2
-        circle.stroke()
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor(calibratedWhite: showHelp ? 0.8 : 0.5, alpha: 1)
-        ]
-        let s = NSAttributedString(string: "?", attributes: attrs)
-        let size = s.size()
-        s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+        drawToolbarButton(in: helpButtonRect, symbol: "?", active: showHelp)
     }
 
     private func drawHelpOverlay() {
-        let area = CGRect(x: KeyboardView.margin, y: KeyboardView.handleHeight + 2,
+        let area = CGRect(x: KeyboardView.margin, y: barHeight + 2,
                           width: bounds.width - KeyboardView.margin * 2,
-                          height: bounds.height - KeyboardView.handleHeight - KeyboardView.margin)
+                          height: bounds.height - barHeight - KeyboardView.margin)
         NSColor(calibratedWhite: 0.1, alpha: 0.96).setFill()
         NSBezierPath(roundedRect: area, xRadius: 12, yRadius: 12).fill()
 
@@ -1127,7 +1166,7 @@ final class KeyboardView: NSView {
         if !predictions.isEmpty || !candidates.isEmpty {
             NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
             NSRect(x: KeyboardView.margin,
-                   y: KeyboardView.handleHeight + topRowHeight + KeyboardView.predictionHeight,
+                   y: barHeight + topRowHeight + KeyboardView.predictionHeight,
                    width: bounds.width - KeyboardView.margin * 2, height: 1).fill()
         }
 

@@ -295,6 +295,24 @@ final class CopyButton: NSButton {
     }
 }
 
+/// Inline button that runs a closure on click (used to re-send history entries).
+final class ActionButton: NSButton {
+    var onClick: () -> Void = {}
+
+    init(title: String) {
+        super.init(frame: .zero)
+        self.title = title
+        bezelStyle = .inline
+        font = NSFont.systemFont(ofSize: 10)
+        target = self
+        action = #selector(fire)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func fire() { onClick() }
+}
+
 /// Plain history of the text actually inserted into the focused app — no model
 /// queries, no prompts. Docked to the left of the keyboard panel. One copy
 /// button per entry plus a copy-all in the header.
@@ -303,12 +321,18 @@ final class TextHistoryConsole {
     private let stack = NSStackView()
     private var entries: [(text: String, date: Date)] = []
 
+    /// Called when the user asks to re-send an entry to the focused app.
+    var onSend: ((String) -> Void)?
+
     /// Every entry is also appended to disk, so sent text survives app
     /// restarts and any delivery failure — it must never be unrecoverable.
     private struct StoredEntry: Codable {
         let date: Date
         let text: String
     }
+
+    /// Where sent texts are persisted — the eval exporter bootstraps from it.
+    static var persistedLogURL: URL { logURL }
 
     private static let logURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,
@@ -479,7 +503,10 @@ final class TextHistoryConsole {
         let copyBtn = CopyButton(title: "copiar")
         copyBtn.payload = { entry.text }
 
-        let headerRow = NSStackView(views: [stamp, NSView(), copyBtn])
+        let sendBtn = ActionButton(title: "enviar")
+        sendBtn.onClick = { [weak self] in self?.onSend?(entry.text) }
+
+        let headerRow = NSStackView(views: [stamp, NSView(), sendBtn, copyBtn])
         headerRow.orientation = .horizontal
         headerRow.spacing = 4
 
