@@ -90,11 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
         QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
 
-        // Eval workspace (<repo>/evals): phrase queries become cases once the
-        // sent text reveals what the user actually wrote after them.
+        // Eval workspace (<repo>/evals): phrase-completion contexts become
+        // cases once the sent text reveals what the user wrote after them.
         evalExporter = EvalExporter()
-        QueryLog.shared.evalSink = { [weak self] query in self?.evalExporter?.capture(query) }
-        evalExporter?.bootstrapFromHistory(TextHistoryConsole.persistedLogURL)
+        QueryLog.shared.evalSink = { [weak self] query in self?.evalExporter?.attach(query) }
         applyHotKey()
         applyCompletionEngine()
         showPanel()
@@ -418,6 +417,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let (rawContext, source) = completionContext()
         let context = CompletionCleaner.contextForModel(rawContext)
         guard context.split(separator: " ").count >= 2 else { return }
+        // Captured at request time: even if the next word cancels this query,
+        // the context is a valid eval case once the ground truth is known.
+        evalExporter?.captureContext(context)
         QueryLog.shared.currentSource = source
         completionTask = Task { @MainActor [weak self] in
             if delay > 0 {
@@ -1005,6 +1007,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     func keyboardView(_ view: KeyboardView, didPickGhost text: String) {
         QueryLog.shared.recordPhraseAccepted()
+        evalExporter?.ghostAccepted(text)
         // Mid-word the continuation glues onto the partial word — no space.
         let needsSpace = lastOutputEndsInWordChar && tapBuffer.isEmpty
         tapBuffer = ""

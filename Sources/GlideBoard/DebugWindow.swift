@@ -331,9 +331,6 @@ final class TextHistoryConsole {
         let text: String
     }
 
-    /// Where sent texts are persisted — the eval exporter bootstraps from it.
-    static var persistedLogURL: URL { logURL }
-
     private static let logURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,
                                            in: .userDomainMask)[0]

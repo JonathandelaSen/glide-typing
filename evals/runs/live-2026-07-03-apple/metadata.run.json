@@ -1,0 +1,18 @@
+{
+  "actionId" : "b7e3a1c4-9d2f-4a6b-8c5e-1f0d2b3a4c5d",
+  "caseIds" : [
+    "f2934a6e-1d22-4757-9595-89f5d5812582"
+  ],
+  "createdAt" : "2026-07-03T02:07:51.799Z",
+  "name" : "Capturas en vivo Apple 2026-07-03",
+  "notes" : "Importado desde GlideBoard: sugerencias reales del motor «Apple» capturadas mientras el usuario escribía.",
+  "producer" : "eval-studio",
+  "runId" : "live-2026-07-03-apple",
+  "runtime" : {
+    "model" : "on-device",
+    "provider" : "apple",
+    "temperature" : 0.14999999999999999
+  },
+  "schemaVersion" : "1",
+  "suiteId" : "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b"
+}

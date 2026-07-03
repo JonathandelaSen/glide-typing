@@ -4,17 +4,16 @@ import CryptoKit
 /// Exports the app's phrase-completion activity as an Eval Studio workspace:
 /// an `evals/` directory with manifest, suite, cases, and imported runs/results.
 ///
-/// Two case sources feed the suite:
-/// - Live captures: every phrase query (context + what the engine suggested)
-///   becomes a case once we know the ground truth — the words the user
-///   actually typed after that context, extracted when the composer is sent.
-///   The engine's suggestion at that moment is exported as a run result, so
-///   the current baseline can be scored in Eval Studio.
-/// - History bootstrap: persisted sent texts are cut at word boundaries into
-///   (context, real continuation) pairs.
+/// Cases come from live typing: every phrase-completion *request* is captured
+/// at request time (most requests get cancelled by the next word before the
+/// engine answers — the context is still a valid case). When the composer is
+/// sent, the sent text reveals the ground truth — the words the user actually
+/// typed after each captured context — and the cases are written. Requests
+/// that did produce an engine answer also get a run result, so the current
+/// baseline can be scored in Eval Studio.
 ///
-/// Case IDs are derived from SHA-256 of (context + continuation), so both
-/// sources are idempotent: re-exporting never duplicates a case.
+/// Case IDs are derived from SHA-256 of (context + continuation), so
+/// re-capturing the same data never duplicates a case.
 final class EvalExporter {
 
     // Fixed identities for the "phrase completion (ghost)" product action.
@@ -26,7 +25,13 @@ final class EvalExporter {
     private let fm = FileManager.default
 
     private struct Pending {
-        let query: ModelQuery
+        let context: String
+        let date: Date
+        /// The engine's answer, when the request survived long enough to get one.
+        var query: ModelQuery?
+        /// The user accepted this suggestion (the continuation in the sent
+        /// text is the model's own output, endorsed by the user).
+        var accepted = false
     }
     private var pending: [Pending] = []
 
@@ -79,36 +84,55 @@ final class EvalExporter {
 
     // MARK: - Live capture
 
-    /// Remember a phrase query until its ground truth is known. Word queries
-    /// are ignored — the suite evaluates phrase continuation only.
-    func capture(_ query: ModelQuery) {
-        guard query.isPhrase else { return }
-        pending.append(Pending(query: query))
+    /// Remember a phrase-completion request the moment it is made. Most
+    /// requests are cancelled by the next word before the engine answers —
+    /// the context is still a valid case once the ground truth is known.
+    func captureContext(_ context: String) {
+        guard pending.last?.context != context else { return }
+        pending.append(Pending(context: context, date: Date(), query: nil))
         // Expire captures the user abandoned (composer cleared, panel closed…).
         let cutoff = Date().addingTimeInterval(-2 * 3600)
-        pending = pending.suffix(300).filter { $0.query.date > cutoff }
+        pending = pending.suffix(300).filter { $0.date > cutoff }
     }
 
-    /// The composer was sent: `sentText` is the final truth. Every pending
-    /// capture whose context appears in it becomes a case (what should have
-    /// been suggested) plus a result (what the engine actually suggested).
+    /// A phrase query completed: attach the engine's answer to its capture so
+    /// the baseline result can be exported alongside the case.
+    func attach(_ query: ModelQuery) {
+        guard query.isPhrase else { return }
+        if let i = pending.lastIndex(where: { $0.context == query.context && $0.query == nil }) {
+            pending[i].query = query
+        } else {
+            pending.append(Pending(context: query.context, date: query.date, query: query))
+        }
+    }
+
+    /// The user accepted the ghost: tag its capture, so the case records that
+    /// its "ground truth" is model output the user endorsed — not spontaneous
+    /// typing — and can be filtered out when that distinction matters.
+    func ghostAccepted(_ text: String) {
+        if let i = pending.lastIndex(where: { $0.query?.cleaned == text }) {
+            pending[i].accepted = true
+        }
+    }
+
+    /// The composer was sent: `sentText` is the final truth. Only captures
+    /// where a suggestion was actually produced become cases — one case per
+    /// result — so accepting one ghost yields one case, not one per word.
     func finalize(sentText: String) {
         guard !pending.isEmpty else { return }
-        var remaining: [Pending] = []
         var wroteCases = false
         for item in pending {
-            guard let continuation = Self.continuation(after: item.query.context, in: sentText) else {
-                remaining.append(item)
-                continue
-            }
-            let caseId = writeCase(context: item.query.context,
+            guard let query = item.query, !query.isEmpty,
+                  let continuation = Self.continuation(after: item.context, in: sentText)
+            else { continue }
+            let caseId = writeCase(context: item.context,
                                    continuation: continuation,
                                    source: "live",
-                                   note: "Capturado en vivo (fuente de contexto: \(item.query.source)).")
-            writeResult(for: item.query, caseId: caseId)
+                                   accepted: item.accepted)
+            writeResult(for: query, caseId: caseId)
             wroteCases = true
         }
-        pending = remaining
+        pending = []
         if wroteCases { rebuildSuite() }
     }
 
@@ -130,36 +154,14 @@ final class EvalExporter {
         return nil
     }
 
-    // MARK: - History bootstrap
-
-    /// Cut each persisted sent text at word boundaries into cases. Idempotent:
-    /// deterministic case IDs make re-runs no-ops.
-    func bootstrapFromHistory(_ url: URL) {
-        guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return }
-        struct StoredEntry: Codable { let date: Date; let text: String }
-        let decoder = JSONDecoder()
-        var wrote = false
-        for line in contents.split(separator: "\n") {
-            guard let entry = try? decoder.decode(StoredEntry.self, from: Data(line.utf8)) else { continue }
-            let words = entry.text.split(separator: " ").map(String.init)
-            guard words.count >= 6 else { continue }
-            let cuts = Set([max(3, words.count * 2 / 5), min(words.count - 2, words.count * 7 / 10)])
-            for cut in cuts where cut >= 3 && cut <= words.count - 2 {
-                let context = words[..<cut].joined(separator: " ")
-                let continuation = words[cut...].prefix(12).joined(separator: " ")
-                _ = writeCase(context: context, continuation: continuation, source: "history",
-                              note: "Generado cortando un texto real del histórico.")
-                wrote = true
-            }
-        }
-        if wrote { rebuildSuite() }
-    }
-
     // MARK: - Case
 
     /// Write (or skip, if it already exists) one case file. Returns its ID.
     private func writeCase(context: String, continuation: String,
-                           source: String, note: String) -> String {
+                           source: String, accepted: Bool) -> String {
+        let note = accepted
+            ? "Capturado en vivo. El usuario ACEPTÓ la sugerencia: la continuación esperada es salida del modelo refrendada por el usuario, no escritura espontánea."
+            : "Capturado en vivo: la continuación esperada es lo que el usuario escribió de verdad tras ver (y no aceptar) la sugerencia."
         let caseId = Self.deterministicUUID("case|\(context)|\(continuation)")
         let url = casesDir.appendingPathComponent("\(caseId).case.json")
         guard !fm.fileExists(atPath: url.path) else { return caseId }
@@ -175,7 +177,8 @@ final class EvalExporter {
             "name": "…\(ctxTail) → \(contTail)…",
             "note": note,
             "createdAt": Self.iso.string(from: Date()),
-            "createdBy": ["source": "glideboard", "capture": source],
+            "createdBy": ["source": "glideboard", "capture": source,
+                          "ghostAccepted": accepted] as [String: Any],
             "input": ["context": context],
             "promptTemplate": [
                 "format": "text",
