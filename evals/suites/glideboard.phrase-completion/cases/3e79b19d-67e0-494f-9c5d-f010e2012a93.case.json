@@ -1,0 +1,33 @@
+{
+  "actionId" : "b7e3a1c4-9d2f-4a6b-8c5e-1f0d2b3a4c5d",
+  "caseId" : "3e79b19d-67e0-494f-9c5d-f010e2012a93",
+  "createdAt" : "2026-07-03T12:23:57.695Z",
+  "createdBy" : {
+    "source" : "glideboard"
+  },
+  "expectedOutput" : {
+    "text" : "estás?"
+  },
+  "input" : {
+    "context" : "hola que tal como "
+  },
+  "name" : "Phrase completion: hola que tal como",
+  "note" : "",
+  "promptTemplate" : {
+    "format" : "text",
+    "templateId" : "glideboard.phrase-completion.v1",
+    "text" : "Eres un autocompletado de escritura, no un asistente que responde al usuario. Continúa el texto como si fueras su autor. Devuelve ÚNICAMENTE la continuación más probable y útil, en el mismo idioma, tono y persona gramatical.\n\nPrioriza completar la intención concreta ya visible: una petición, explicación, lista, mensaje o fragmento de código. Prefiere detalles específicos sugeridos por el contexto frente a frases genéricas. Escribe entre 2 y 10 palabras; puedes terminar antes si completas claramente la idea. No repitas el texto, no lo contestes, no añadas comillas, etiquetas ni explicaciones.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si hay errores\nTexto: \"create a new branch and\"\nRespuesta: push the changes to it\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define cómo mediremos el impacto\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez y revisar juntos los cambios\n\nTexto hasta el cursor:\n{{context}}\n\nContinuación:"
+  },
+  "promptVariables" : {
+    "context" : "hola que tal como "
+  },
+  "renderedPrompt" : {
+    "format" : "text",
+    "text" : "Eres un autocompletado de escritura, no un asistente que responde al usuario. Continúa el texto como si fueras su autor. Devuelve ÚNICAMENTE la continuación más probable y útil, en el mismo idioma, tono y persona gramatical.\n\nPrioriza completar la intención concreta ya visible: una petición, explicación, lista, mensaje o fragmento de código. Prefiere detalles específicos sugeridos por el contexto frente a frases genéricas. Escribe entre 2 y 10 palabras; puedes terminar antes si completas claramente la idea. No repitas el texto, no lo contestes, no añadas comillas, etiquetas ni explicaciones.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si hay errores\nTexto: \"create a new branch and\"\nRespuesta: push the changes to it\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define cómo mediremos el impacto\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez y revisar juntos los cambios\n\nTexto hasta el cursor:\nhola que tal como \n\nContinuación:"
+  },
+  "runtime" : {},
+  "schemaVersion" : "1",
+  "source" : {
+    "app" : "GlideBoard"
+  }
+}

@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var lastExternalApp: NSRunningApplication?
     private var history: TextHistoryConsole?
     private var evalExporter: EvalExporter?
+    private var evalCaptureMenuItem: NSMenuItem?
     private var toggleMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
@@ -551,6 +552,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         menu.addItem(debug)
         let textHistory = NSMenuItem(title: "Histórico de texto introducido…", action: #selector(openHistory), keyEquivalent: "")
         menu.addItem(textHistory)
+        let evalCapture = NSMenuItem(title: "Generar evals al escribir",
+                                     action: #selector(toggleEvalCapture), keyEquivalent: "")
+        evalCapture.target = self
+        evalCapture.state = Settings.evalCaptureEnabled ? .on : .off
+        menu.addItem(evalCapture)
+        evalCaptureMenuItem = evalCapture
         menu.addItem(.separator())
         let es = NSMenuItem(title: "Español", action: #selector(setSpanish), keyEquivalent: "")
         es.target = self
@@ -601,6 +608,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     // MARK: - Settings
+
+    @objc private func toggleEvalCapture() {
+        Settings.evalCaptureEnabled.toggle()
+        evalCaptureMenuItem?.state = Settings.evalCaptureEnabled ? .on : .off
+        keyboardView.flash(Settings.evalCaptureEnabled
+                           ? "Generando evals al escribir"
+                           : "Generación de evals desactivada")
+    }
 
     @objc private func openSettings() {
         if settingsController == nil {

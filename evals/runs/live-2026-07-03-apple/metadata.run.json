@@ -1,11 +1,11 @@
 {
   "actionId" : "b7e3a1c4-9d2f-4a6b-8c5e-1f0d2b3a4c5d",
   "caseIds" : [
-    "f2934a6e-1d22-4757-9595-89f5d5812582"
+    "3e79b19d-67e0-494f-9c5d-f010e2012a93"
   ],
-  "createdAt" : "2026-07-03T02:07:51.799Z",
-  "name" : "Capturas en vivo Apple 2026-07-03",
-  "notes" : "Importado desde GlideBoard: sugerencias reales del motor «Apple» capturadas mientras el usuario escribía.",
+  "createdAt" : "2026-07-03T12:23:57.698Z",
+  "name" : "live-2026-07-03-apple",
+  "notes" : null,
   "producer" : "eval-studio",
   "runId" : "live-2026-07-03-apple",
   "runtime" : {

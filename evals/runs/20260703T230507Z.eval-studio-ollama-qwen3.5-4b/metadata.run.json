@@ -1,0 +1,18 @@
+{
+  "runId": "20260703T230507Z.eval-studio-ollama-qwen3.5-4b",
+  "name": "Retry qwen3.5:4b 2026-07-03T22:37",
+  "suiteId": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-03T23:05:07.494Z",
+  "caseIds": [
+    "3e79b19d-67e0-494f-9c5d-f010e2012a93"
+  ],
+  "runtime": {
+    "provider": "ollama",
+    "model": "qwen3.5:4b",
+    "temperature": 0,
+    "metadata": null
+  },
+  "notes": null,
+  "status": "completed_with_failures"
+}

@@ -1,0 +1,29 @@
+{
+  "resultId": "20260703T230507Z.eval-studio-ollama-qwen3.5-4b.3e79b19d-67e0-494f-9c5d-f010e2012a93",
+  "caseId": "3e79b19d-67e0-494f-9c5d-f010e2012a93",
+  "runId": "20260703T230507Z.eval-studio-ollama-qwen3.5-4b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-03T23:10:08.643Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "qwen3.5:4b",
+    "temperature": 0,
+    "metadata": null
+  },
+  "promptVariables": {
+    "context": "hola que tal como "
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Eres un autocompletado de escritura, no un asistente que responde al usuario. Continúa el texto como si fueras su autor. Devuelve ÚNICAMENTE la continuación más probable y útil, en el mismo idioma, tono y persona gramatical.\n\nPrioriza completar la intención concreta ya visible: una petición, explicación, lista, mensaje o fragmento de código. Prefiere detalles específicos sugeridos por el contexto frente a frases genéricas. Escribe entre 2 y 10 palabras; puedes terminar antes si completas claramente la idea. No repitas el texto, no lo contestes, no añadas comillas, etiquetas ni explicaciones.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si hay errores\nTexto: \"create a new branch and\"\nRespuesta: push the changes to it\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define cómo mediremos el impacto\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez y revisar juntos los cambios\n\nTexto hasta el cursor:\nhola que tal como \n\nContinuación:"
+  },
+  "rawOutput": null,
+  "parsedOutput": null,
+  "status": "failed",
+  "error": {
+    "message": "fetch failed",
+    "code": "provider_error"
+  },
+  "usage": null,
+  "latencyMs": null
+}

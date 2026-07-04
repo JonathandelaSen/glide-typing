@@ -1,19 +1,16 @@
 import Foundation
-import CryptoKit
 
 /// Exports the app's phrase-completion activity as an Eval Studio workspace:
 /// an `evals/` directory with manifest, suite, cases, and imported runs/results.
 ///
-/// Cases come from live typing: every phrase-completion *request* is captured
-/// at request time (most requests get cancelled by the next word before the
-/// engine answers — the context is still a valid case). When the composer is
-/// sent, the sent text reveals the ground truth — the words the user actually
-/// typed after each captured context — and the cases are written. Requests
-/// that did produce an engine answer also get a run result, so the current
-/// baseline can be scored in Eval Studio.
-///
-/// Case IDs are derived from SHA-256 of (context + continuation), so
-/// re-capturing the same data never duplicates a case.
+/// Cases come from live typing (only while Settings.evalCaptureEnabled): a
+/// case is created per suggestion actually shown, materialized when the
+/// composer is sent. Cases record only facts observed at capture time — the
+/// context, the exact rendered prompt, whether the ghost was accepted, and
+/// what the user really typed next (under `observed`). Anything that is the
+/// user's editorial call (name, expectedOutput) is left empty for manual
+/// editing in the case file. Every test is its own case — captures are never
+/// merged, since the user's intention behind each one is unknowable.
 final class EvalExporter {
 
     // Fixed identities for the "phrase completion (ghost)" product action.
@@ -88,6 +85,7 @@ final class EvalExporter {
     /// requests are cancelled by the next word before the engine answers —
     /// the context is still a valid case once the ground truth is known.
     func captureContext(_ context: String) {
+        guard Settings.evalCaptureEnabled else { return }
         guard pending.last?.context != context else { return }
         pending.append(Pending(context: context, date: Date(), query: nil))
         // Expire captures the user abandoned (composer cleared, panel closed…).
@@ -98,7 +96,7 @@ final class EvalExporter {
     /// A phrase query completed: attach the engine's answer to its capture so
     /// the baseline result can be exported alongside the case.
     func attach(_ query: ModelQuery) {
-        guard query.isPhrase else { return }
+        guard Settings.evalCaptureEnabled, query.isPhrase else { return }
         if let i = pending.lastIndex(where: { $0.context == query.context && $0.query == nil }) {
             pending[i].query = query
         } else {
@@ -156,26 +154,20 @@ final class EvalExporter {
 
     // MARK: - Case
 
-    /// Write (or skip, if it already exists) one case file. Returns its ID.
+    /// Write one case file. Every capture is a distinct case (random ID):
+    /// two identical-looking tests are still two different user intentions.
+    /// Only observed facts are recorded; `name` and `expectedOutput` are
+    /// emitted empty, to be filled in manually.
     private func writeCase(context: String, continuation: String,
                            source: String, accepted: Bool) -> String {
-        let note = accepted
-            ? "Capturado en vivo. El usuario ACEPTÓ la sugerencia: la continuación esperada es salida del modelo refrendada por el usuario, no escritura espontánea."
-            : "Capturado en vivo: la continuación esperada es lo que el usuario escribió de verdad tras ver (y no aceptar) la sugerencia."
-        let caseId = Self.deterministicUUID("case|\(context)|\(continuation)")
-        let url = casesDir.appendingPathComponent("\(caseId).case.json")
-        guard !fm.fileExists(atPath: url.path) else { return caseId }
-
+        let caseId = UUID().uuidString.lowercased()
         let prompt = CompletionCleaner.instructions
             + "\n\nTexto hasta el cursor:\n\(context)\n\nContinuación:"
-        let ctxTail = context.split(separator: " ").suffix(5).joined(separator: " ")
-        let contTail = continuation.split(separator: " ").prefix(4).joined(separator: " ")
         writeJSON([
             "schemaVersion": "1",
             "caseId": caseId,
             "actionId": Self.actionId,
-            "name": "…\(ctxTail) → \(contTail)…",
-            "note": note,
+            "name": "",
             "createdAt": Self.iso.string(from: Date()),
             "createdBy": ["source": "glideboard", "capture": source,
                           "ghostAccepted": accepted] as [String: Any],
@@ -187,17 +179,13 @@ final class EvalExporter {
             ],
             "promptVariables": ["context": context],
             "renderedPrompt": ["format": "text", "text": prompt],
-            "expectedOutput": [
-                "kind": "continuation",
-                "text": continuation,
-                "criteria": [
-                    "Coincide con la intención real del usuario: «\(continuation)»",
-                    "Mismo idioma, tono y persona gramatical que el contexto",
-                    "No repite el contexto ni lo responde como asistente"
-                ]
-            ],
+            "expectedOutput": ["kind": "continuation", "text": ""],
+            // Facts, not expectations: what the user actually typed after the
+            // context in this session. Manually copy into expectedOutput if
+            // it matches the intention behind the case.
+            "observed": ["continuation": continuation, "ghostAccepted": accepted] as [String: Any],
             "source": ["app": "GlideBoard"]
-        ], to: url)
+        ], to: casesDir.appendingPathComponent("\(caseId).case.json"))
         return caseId
     }
 
@@ -212,8 +200,7 @@ final class EvalExporter {
             "schemaVersion": "1",
             "suiteId": Self.suiteId,
             "actionId": Self.actionId,
-            "name": "Continuación de frase (ghost)",
-            "description": "Contextos reales de escritura con la continuación que el usuario escribió de verdad. Un buen resultado predice esas palabras (o su arranque).",
+            "name": "glideboard.phrase-completion",
             "caseIds": ids
         ], to: suiteDir.appendingPathComponent("suite.json"))
     }
@@ -276,13 +263,13 @@ final class EvalExporter {
             run = [
                 "schemaVersion": "1",
                 "runId": id,
-                "name": "Capturas en vivo \(engine) \(day)",
+                "name": id,
                 "actionId": Self.actionId,
                 "producer": "eval-studio",
                 "createdAt": Self.iso.string(from: Date()),
                 "caseIds": [String](),
                 "runtime": ["provider": provider, "model": model, "temperature": 0.15],
-                "notes": "Importado desde GlideBoard: sugerencias reales del motor «\(engine)» capturadas mientras el usuario escribía.",
+                "notes": NSNull(),
                 "suiteId": Self.suiteId
             ]
         }
@@ -294,19 +281,6 @@ final class EvalExporter {
     }
 
     // MARK: - Plumbing
-
-    /// SHA-256-based UUID so identical data always maps to the same case file.
-    static func deterministicUUID(_ seed: String) -> String {
-        var bytes = Array(SHA256.hash(data: Data(seed.utf8)).prefix(16))
-        bytes[6] = (bytes[6] & 0x0F) | 0x40 // version 4
-        bytes[8] = (bytes[8] & 0x3F) | 0x80 // RFC 4122 variant
-        let hex = bytes.map { String(format: "%02x", $0) }.joined()
-        let h = { (r: Range<Int>) -> Substring in
-            let s = hex.index(hex.startIndex, offsetBy: r.lowerBound)
-            return hex[s..<hex.index(hex.startIndex, offsetBy: r.upperBound)]
-        }
-        return "\(h(0..<8))-\(h(8..<12))-\(h(12..<16))-\(h(16..<20))-\(h(20..<32))"
-    }
 
     /// Write JSON to a temp file and rename into place, so Eval Studio never
     /// sees a half-written artifact during a refresh.

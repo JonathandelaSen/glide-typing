@@ -1,0 +1,32 @@
+{
+  "resultId": "20260703T224011Z.eval-studio-ollama-gemma4-26b.3e79b19d-67e0-494f-9c5d-f010e2012a93",
+  "caseId": "3e79b19d-67e0-494f-9c5d-f010e2012a93",
+  "runId": "20260703T224011Z.eval-studio-ollama-gemma4-26b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-03T22:41:18.638Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma4:26b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "5571076f3d70050487b26b341705799e0ab29b808164f90d20d4cf84f699d251"
+    }
+  },
+  "promptVariables": {
+    "context": "hola que tal como "
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Eres un autocompletado de escritura, no un asistente que responde al usuario. Continúa el texto como si fueras su autor. Devuelve ÚNICAMENTE la continuación más probable y útil, en el mismo idioma, tono y persona gramatical.\n\nPrioriza completar la intención concreta ya visible: una petición, explicación, lista, mensaje o fragmento de código. Prefiere detalles específicos sugeridos por el contexto frente a frases genéricas. Escribe entre 2 y 10 palabras; puedes terminar antes si completas claramente la idea. No repitas el texto, no lo contestes, no añadas comillas, etiquetas ni explicaciones.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si hay errores\nTexto: \"create a new branch and\"\nRespuesta: push the changes to it\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define cómo mediremos el impacto\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez y revisar juntos los cambios\n\nTexto hasta el cursor:\nhola que tal como \n\nContinuación:"
+  },
+  "rawOutput": "estás",
+  "parsedOutput": "estás",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 256,
+    "outputTokens": 273,
+    "costUsd": null
+  },
+  "latencyMs": 60875
+}
