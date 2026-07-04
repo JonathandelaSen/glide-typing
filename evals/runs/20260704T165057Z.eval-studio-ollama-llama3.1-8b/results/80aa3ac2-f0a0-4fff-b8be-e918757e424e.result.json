@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165057Z.eval-studio-ollama-llama3.1-8b.80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "caseId": "80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "runId": "20260704T165057Z.eval-studio-ollama-llama3.1-8b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:51:37.557Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "llama3.1:8b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "cuando termines los cambios abre una pull"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "llama3.1:8b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "cuando termines los cambios abre una pull"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "Una pregunta muy práctica!\n\nSi estás trabajando en un proyecto de desarrollo de software y necesitas hacer algunos cambios en el código, aquí te explico qué significa \"abrir una pull request\" (también conocida como PR o simplemente \"pull\"):\n\n**¿Qué es una pull request?**\n\nUna pull request es una solicitud para que los demás miembros del equipo revisen y aprueben los cambios que has hecho en el código. Es un proceso de colaboración que permite a otros desarrolladores revisar tus cambios antes de que se integren al código principal.\n\n**¿Por qué abrir una pull request?**\n\nAbre una pull request para:\n\n1. **Revisión**: Otros desarrolladores pueden revisar tus cambios y asegurarse de que estén correctos, completos y no introduzcan errores.\n2. **Aprobación**: Los demás miembros del equipo deben aprobar tus cambios antes de que se integren al código principal.\n3. **Comunicación**: La pull request es una oportunidad para discutir los cambios con otros desarrolladores y obtener retroalimentación.\n\n**¿Cómo abrir una pull request?**\n\nLa forma de abrir una pull request varía dependiendo del sistema de control de versiones (SCV) que estés utilizando. Algunos ejemplos son:\n\n* GitHub: Haz clic en \"New pull request\" en la página de tu repositorio y selecciona el branch donde has hecho los cambios.\n* GitLab: Haz clic en \"Merge requests\" en la página de tu proyecto y selecciona el branch donde has hecho los cambios.\n* Bitbucket: Haz clic en \"Pull requests\" en la página de tu proyecto y selecciona el branch donde has hecho los cambios.\n\nRecuerda que, una vez que hayas abierto la pull request, otros desarrolladores pueden revisar tus cambios y hacer comentarios o sugerencias. Una vez aprobada la pull request, tus cambios se integrarán al código principal.",
+  "parsedOutput": "Una pregunta muy práctica!\n\nSi estás trabajando en un proyecto de desarrollo de software y necesitas hacer algunos cambios en el código, aquí te explico qué significa \"abrir una pull request\" (también conocida como PR o simplemente \"pull\"):\n\n**¿Qué es una pull request?**\n\nUna pull request es una solicitud para que los demás miembros del equipo revisen y aprueben los cambios que has hecho en el código. Es un proceso de colaboración que permite a otros desarrolladores revisar tus cambios antes de que se integren al código principal.\n\n**¿Por qué abrir una pull request?**\n\nAbre una pull request para:\n\n1. **Revisión**: Otros desarrolladores pueden revisar tus cambios y asegurarse de que estén correctos, completos y no introduzcan errores.\n2. **Aprobación**: Los demás miembros del equipo deben aprobar tus cambios antes de que se integren al código principal.\n3. **Comunicación**: La pull request es una oportunidad para discutir los cambios con otros desarrolladores y obtener retroalimentación.\n\n**¿Cómo abrir una pull request?**\n\nLa forma de abrir una pull request varía dependiendo del sistema de control de versiones (SCV) que estés utilizando. Algunos ejemplos son:\n\n* GitHub: Haz clic en \"New pull request\" en la página de tu repositorio y selecciona el branch donde has hecho los cambios.\n* GitLab: Haz clic en \"Merge requests\" en la página de tu proyecto y selecciona el branch donde has hecho los cambios.\n* Bitbucket: Haz clic en \"Pull requests\" en la página de tu proyecto y selecciona el branch donde has hecho los cambios.\n\nRecuerda que, una vez que hayas abierto la pull request, otros desarrolladores pueden revisar tus cambios y hacer comentarios o sugerencias. Una vez aprobada la pull request, tus cambios se integrarán al código principal.",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 19,
+    "outputTokens": 414,
+    "costUsd": null
+  },
+  "latencyMs": 29441
+}

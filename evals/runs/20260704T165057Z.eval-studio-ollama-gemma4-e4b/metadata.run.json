@@ -1,0 +1,18 @@
+{
+  "runId": "20260704T165057Z.eval-studio-ollama-gemma4-e4b",
+  "name": "gemma4:e4b 2026-07-04T16:50",
+  "suiteId": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:50:57.998Z",
+  "caseIds": [
+    "80aa3ac2-f0a0-4fff-b8be-e918757e424e"
+  ],
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma4:e4b",
+    "temperature": 0,
+    "metadata": null
+  },
+  "notes": null,
+  "status": "completed"
+}

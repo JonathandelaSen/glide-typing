@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165655Z.eval-studio-ollama-llama3.2-3b.85350f06-aa8b-48c0-886c-bdfd7ddf15b2",
+  "caseId": "85350f06-aa8b-48c0-886c-bdfd7ddf15b2",
+  "runId": "20260704T165655Z.eval-studio-ollama-llama3.2-3b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:56:58.672Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "llama3.2:3b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Continue the sentence 'cuando termines los cambios abre una pull...'"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "llama3.2:3b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Continue the sentence 'cuando termines los cambios abre una pull...'"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "...y haz un `git push origin main` para actualizar la rama en el repositorio remoto.",
+  "parsedOutput": "...y haz un `git push origin main` para actualizar la rama en el repositorio remoto.",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 39,
+    "outputTokens": 23,
+    "costUsd": null
+  },
+  "latencyMs": 3270
+}

@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165058Z.eval-studio-ollama-gemma4-e2b.80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "caseId": "80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "runId": "20260704T165058Z.eval-studio-ollama-gemma4-e2b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:52:26.489Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma4:e2b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "7fbdbf8f5e45a75bb122155ed546e765b4d9c53a1285f62fd9f506baa1c5a47e"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "cuando termines los cambios abre una pull"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "gemma4:e2b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "cuando termines los cambios abre una pull"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "Por favor, dame más contexto. ¿A qué cambios te refieres?\n\nSi estás trabajando en un proyecto de código o usando Git, necesito saber:\n\n1. **¿Qué cambios has realizado?**\n2. **¿Dónde están esos cambios?**\n3. **¿Qué quieres que haga yo (o el sistema) con esa información?**\n\nDime qué necesitas y con gusto te ayudaré a realizar la acción de \"pull\".",
+  "parsedOutput": "Por favor, dame más contexto. ¿A qué cambios te refieres?\n\nSi estás trabajando en un proyecto de código o usando Git, necesito saber:\n\n1. **¿Qué cambios has realizado?**\n2. **¿Dónde están esos cambios?**\n3. **¿Qué quieres que haga yo (o el sistema) con esa información?**\n\nDime qué necesitas y con gusto te ayudaré a realizar la acción de \"pull\".",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 24,
+    "outputTokens": 436,
+    "costUsd": null
+  },
+  "latencyMs": 14327
+}

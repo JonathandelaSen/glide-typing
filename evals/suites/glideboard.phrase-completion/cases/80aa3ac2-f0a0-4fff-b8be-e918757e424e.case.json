@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1",
+  "caseId": "80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "suiteId": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b",
+  "name": "pr - raw text",
+  "expectedOutput": "request",
+  "createdAt": "2026-07-04T16:50:44.090Z",
+  "createdBy": {
+    "source": "eval-studio"
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "cuando termines los cambios abre una pull"
+  }
+}

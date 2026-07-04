@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165057Z.eval-studio-ollama-llama3.2-3b.80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "caseId": "80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "runId": "20260704T165057Z.eval-studio-ollama-llama3.2-3b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:51:08.102Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "llama3.2:3b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "cuando termines los cambios abre una pull"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "llama3.2:3b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "cuando termines los cambios abre una pull"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "Parece que estás utilizando lenguaje de programación Git, específicamente para describir el proceso de hacer cambios en un proyecto y luego compartirlos con otros desarrolladores a través de una pull request.\n\nEn resumen, cuando termines de hacer cambios en tu código fuente (por ejemplo, después de resolver un problema o agregar nuevas funcionalidades), es común crear una \"pull request\" (PR) para compartir esos cambios con otros miembros del equipo o con la comunidad de desarrolladores que están trabajando en el mismo proyecto.\n\nUna pull request es como un \"envío\" de tus cambios a un repositorio Git, donde se pueden revisar y discutir antes de que sean aceptados oficialmente. Esto permite a los demás desarrolladores:\n\n1. Revisar tus cambios para asegurarse de que no contengan errores o problemas.\n2. Discutir tus cambios con ti y otros miembros del equipo.\n3. Aceptar o rechazar tus cambios según sea necesario.\n\nAl abrir una pull request, estás compartiendo tus cambios con la comunidad de desarrolladores y pidiendo su retroalimentación y aprobación antes de que se incorporen en el código fuente principal.\n\n¿Necesitas ayuda para crear una pull request o tienes alguna pregunta específica sobre este proceso?",
+  "parsedOutput": "Parece que estás utilizando lenguaje de programación Git, específicamente para describir el proceso de hacer cambios en un proyecto y luego compartirlos con otros desarrolladores a través de una pull request.\n\nEn resumen, cuando termines de hacer cambios en tu código fuente (por ejemplo, después de resolver un problema o agregar nuevas funcionalidades), es común crear una \"pull request\" (PR) para compartir esos cambios con otros miembros del equipo o con la comunidad de desarrolladores que están trabajando en el mismo proyecto.\n\nUna pull request es como un \"envío\" de tus cambios a un repositorio Git, donde se pueden revisar y discutir antes de que sean aceptados oficialmente. Esto permite a los demás desarrolladores:\n\n1. Revisar tus cambios para asegurarse de que no contengan errores o problemas.\n2. Discutir tus cambios con ti y otros miembros del equipo.\n3. Aceptar o rechazar tus cambios según sea necesario.\n\nAl abrir una pull request, estás compartiendo tus cambios con la comunidad de desarrolladores y pidiendo su retroalimentación y aprobación antes de que se incorporen en el código fuente principal.\n\n¿Necesitas ayuda para crear una pull request o tienes alguna pregunta específica sobre este proceso?",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 34,
+    "outputTokens": 275,
+    "costUsd": null
+  },
+  "latencyMs": 10196
+}

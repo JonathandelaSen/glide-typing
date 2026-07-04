@@ -1,0 +1,18 @@
+{
+  "runId": "20260704T165655Z.eval-studio-apple-system-default",
+  "name": "system-default 2026-07-04T16:56",
+  "suiteId": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:56:55.636Z",
+  "caseIds": [
+    "85350f06-aa8b-48c0-886c-bdfd7ddf15b2"
+  ],
+  "runtime": {
+    "provider": "apple",
+    "model": "system-default",
+    "temperature": 0,
+    "metadata": null
+  },
+  "notes": null,
+  "status": "completed"
+}

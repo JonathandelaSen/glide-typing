@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165655Z.eval-studio-ollama-gemma4-e4b.85350f06-aa8b-48c0-886c-bdfd7ddf15b2",
+  "caseId": "85350f06-aa8b-48c0-886c-bdfd7ddf15b2",
+  "runId": "20260704T165655Z.eval-studio-ollama-gemma4-e4b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:57:38.234Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma4:e4b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Continue the sentence 'cuando termines los cambios abre una pull...'"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "gemma4:e4b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Continue the sentence 'cuando termines los cambios abre una pull...'"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "...request.\n\n*(The full phrase is **pull request**, which is the standard terminology in software development for requesting that your changes be reviewed and merged into a main branch.)*\n\n***\n\n**Otras continuaciones posibles, dependiendo del contexto:**\n\n1.  **Si quieres ser más específico sobre el proceso:**\n    > \"Cuando termines los cambios abre una pull **request para que la revisemos juntos.**\" (Open a PR so we can review it together.)\n\n2.  **Si estás dando instrucciones de flujo de trabajo:**\n    > \"Cuando termines los cambios, abre una pull **request y etiqueta al equipo de QA.**\" (Open a PR and tag the QA team.)",
+  "parsedOutput": "...request.\n\n*(The full phrase is **pull request**, which is the standard terminology in software development for requesting that your changes be reviewed and merged into a main branch.)*\n\n***\n\n**Otras continuaciones posibles, dependiendo del contexto:**\n\n1.  **Si quieres ser más específico sobre el proceso:**\n    > \"Cuando termines los cambios abre una pull **request para que la revisemos juntos.**\" (Open a PR so we can review it together.)\n\n2.  **Si estás dando instrucciones de flujo de trabajo:**\n    > \"Cuando termines los cambios, abre una pull **request y etiqueta al equipo de QA.**\" (Open a PR and tag the QA team.)",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 29,
+    "outputTokens": 565,
+    "costUsd": null
+  },
+  "latencyMs": 33608
+}

@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165058Z.eval-studio-ollama-gemma3-1b.80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "caseId": "80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "runId": "20260704T165058Z.eval-studio-ollama-gemma3-1b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:52:12.149Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma3:1b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "8648f39daa8fbf5b18c7b4e6a8fb4990c692751d49917417b8842ca5758e7ffc"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "cuando termines los cambios abre una pull"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "gemma3:1b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "cuando termines los cambios abre una pull"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "Como modelo de lenguaje, no tengo la capacidad de \"terminar\" los cambios en un repositorio Git.  Mi trabajo es procesar y generar texto basado en las instrucciones que me das.\n\nSin embargo, **el proceso de \"abrir una pull\" (o \"merge\")** implica lo siguiente:\n\n1. **El desarrollador (o tú) hace cambios en el código.**\n2. **El desarrollador crea un commit con sus cambios.**  Este commit es como un punto en el tiempo donde se han realizado los cambios.\n3. **El desarrollador envía el commit al repositorio Git.**\n4. **El sistema de control de versiones (Git) detecta el nuevo commit y automáticamente abre una pull request (o merge request).**\n\n**La \"pull\" o \"merge\" es el proceso en el que el código del nuevo commit se une al código existente en el repositorio.**  Esto implica:\n\n*   **Revisión:** Los desarrolladores revisan el código de la pull request para asegurarse de que cumple con los estándares, las mejores prácticas y no introduce errores.\n*   **Merge (Unificación):** El código de la pull request se fusiona con el código existente en el repositorio.  Esto significa que se combinan las líneas de código, se modifican las variables o funciones, etc.\n\n**En resumen:** No \"termino\" los cambios, pero sí **abro una pull request (o merge request) para que el código nuevo se integre al proyecto.**\n\n**¿Quieres saber más sobre cómo funciona el proceso de pull?  Puedo explicarlo con más detalle si te interesa.**\n",
+  "parsedOutput": "Como modelo de lenguaje, no tengo la capacidad de \"terminar\" los cambios en un repositorio Git.  Mi trabajo es procesar y generar texto basado en las instrucciones que me das.\n\nSin embargo, **el proceso de \"abrir una pull\" (o \"merge\")** implica lo siguiente:\n\n1. **El desarrollador (o tú) hace cambios en el código.**\n2. **El desarrollador crea un commit con sus cambios.**  Este commit es como un punto en el tiempo donde se han realizado los cambios.\n3. **El desarrollador envía el commit al repositorio Git.**\n4. **El sistema de control de versiones (Git) detecta el nuevo commit y automáticamente abre una pull request (o merge request).**\n\n**La \"pull\" o \"merge\" es el proceso en el que el código del nuevo commit se une al código existente en el repositorio.**  Esto implica:\n\n*   **Revisión:** Los desarrolladores revisan el código de la pull request para asegurarse de que cumple con los estándares, las mejores prácticas y no introduce errores.\n*   **Merge (Unificación):** El código de la pull request se fusiona con el código existente en el repositorio.  Esto significa que se combinan las líneas de código, se modifican las variables o funciones, etc.\n\n**En resumen:** No \"termino\" los cambios, pero sí **abro una pull request (o merge request) para que el código nuevo se integre al proyecto.**\n\n**¿Quieres saber más sobre cómo funciona el proceso de pull?  Puedo explicarlo con más detalle si te interesa.**\n",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 18,
+    "outputTokens": 338,
+    "costUsd": null
+  },
+  "latencyMs": 5862
+}

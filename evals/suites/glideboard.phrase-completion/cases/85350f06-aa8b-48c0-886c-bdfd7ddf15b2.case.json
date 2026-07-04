@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1",
+  "caseId": "85350f06-aa8b-48c0-886c-bdfd7ddf15b2",
+  "suiteId": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b",
+  "name": "pr - Continue the sentence",
+  "expectedOutput": "request",
+  "createdAt": "2026-07-04T16:55:39.925Z",
+  "createdBy": {
+    "source": "eval-studio",
+    "duplicatedFrom": "80aa3ac2-f0a0-4fff-b8be-e918757e424e"
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Continue the sentence 'cuando termines los cambios abre una pull...'"
+  }
+}

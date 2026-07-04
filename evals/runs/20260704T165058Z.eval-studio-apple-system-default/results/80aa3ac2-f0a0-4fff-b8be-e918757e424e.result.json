@@ -1,0 +1,36 @@
+{
+  "resultId": "20260704T165058Z.eval-studio-apple-system-default.80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "caseId": "80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "runId": "20260704T165058Z.eval-studio-apple-system-default",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:52:28.901Z",
+  "runtime": {
+    "provider": "apple",
+    "model": "system-default",
+    "temperature": 0,
+    "metadata": {
+      "systemVersion": "Version 26.5.1 (Build 25F80)"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "cuando termines los cambios abre una pull"
+  },
+  "providerRequest": {
+    "transport": "process",
+    "target": "apple-foundation-model",
+    "contentType": "application/json",
+    "body": {
+      "mode": "execute",
+      "instructions": "",
+      "prompt": "cuando termines los cambios abre una pull",
+      "temperature": 0
+    }
+  },
+  "rawOutput": "Lo siento, pero no puedo proporcionar información sobre actividades o eventos específicos. Si tienes alguna otra pregunta o necesitas ayuda con algo diferente, estaré encantado de asistirte.",
+  "parsedOutput": "Lo siento, pero no puedo proporcionar información sobre actividades o eventos específicos. Si tienes alguna otra pregunta o necesitas ayuda con algo diferente, estaré encantado de asistirte.",
+  "status": "completed",
+  "error": null,
+  "usage": null,
+  "latencyMs": 2407
+}

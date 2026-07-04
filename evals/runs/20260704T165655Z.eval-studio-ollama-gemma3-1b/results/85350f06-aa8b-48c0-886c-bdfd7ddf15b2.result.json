@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165655Z.eval-studio-ollama-gemma3-1b.85350f06-aa8b-48c0-886c-bdfd7ddf15b2",
+  "caseId": "85350f06-aa8b-48c0-886c-bdfd7ddf15b2",
+  "runId": "20260704T165655Z.eval-studio-ollama-gemma3-1b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:57:40.469Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma3:1b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "8648f39daa8fbf5b18c7b4e6a8fb4990c692751d49917417b8842ca5758e7ffc"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Continue the sentence 'cuando termines los cambios abre una pull...'"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "gemma3:1b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Continue the sentence 'cuando termines los cambios abre una pull...'"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "Cuando terminas los cambios, abre una pull request.\n\nOr:\n\nWhen you finish your changes, open a pull request. \n\nLet me know if you'd like another continuation! 😊",
+  "parsedOutput": "Cuando terminas los cambios, abre una pull request.\n\nOr:\n\nWhen you finish your changes, open a pull request. \n\nLet me know if you'd like another continuation! 😊",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 23,
+    "outputTokens": 41,
+    "costUsd": null
+  },
+  "latencyMs": 2213
+}

@@ -1,0 +1,47 @@
+{
+  "resultId": "20260704T165057Z.eval-studio-ollama-gemma4-e4b.80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "caseId": "80aa3ac2-f0a0-4fff-b8be-e918757e424e",
+  "runId": "20260704T165057Z.eval-studio-ollama-gemma4-e4b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T16:52:06.275Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma4:e4b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "cuando termines los cambios abre una pull"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "gemma4:e4b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "cuando termines los cambios abre una pull"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "Entendido. Cuando haya finalizado los cambios, procederé a abrir la Pull Request para que puedas revisarlos y fusionar el código.\n\n¿Hay algún detalle específico que deba incluir en la descripción de la PR (como el *ticket* o las pruebas realizadas)?",
+  "parsedOutput": "Entendido. Cuando haya finalizado los cambios, procederé a abrir la Pull Request para que puedas revisarlos y fusionar el código.\n\n¿Hay algún detalle específico que deba incluir en la descripción de la PR (como el *ticket* o las pruebas realizadas)?",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 24,
+    "outputTokens": 511,
+    "costUsd": null
+  },
+  "latencyMs": 28694
+}
