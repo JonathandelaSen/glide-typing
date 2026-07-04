@@ -1,0 +1,18 @@
+{
+  "runId": "20260704T021158Z.eval-studio-ollama-llama3.1-8b",
+  "name": "llama3.1:8b 2026-07-04T02:11",
+  "suiteId": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T02:11:58.016Z",
+  "caseIds": [
+    "b24945b4-4961-4518-a4df-45e1b7cc053d"
+  ],
+  "runtime": {
+    "provider": "ollama",
+    "model": "llama3.1:8b",
+    "temperature": 0,
+    "metadata": null
+  },
+  "notes": null,
+  "status": "completed"
+}

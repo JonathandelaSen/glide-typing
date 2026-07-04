@@ -1,0 +1,18 @@
+{
+  "runId": "20260704T002444Z.eval-studio-ollama-qwen3-1.7b",
+  "name": "qwen3:1.7b 2026-07-04T00:24",
+  "suiteId": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T00:24:44.641Z",
+  "caseIds": [
+    "ad86b0ed-b020-4750-83e2-1f2caa0ba646"
+  ],
+  "runtime": {
+    "provider": "ollama",
+    "model": "qwen3:1.7b",
+    "temperature": 0,
+    "metadata": null
+  },
+  "notes": null,
+  "status": "completed_with_failures"
+}

@@ -1,0 +1,39 @@
+{
+  "resultId": "20260704T021302Z.eval-studio-apple-system-default.b24945b4-4961-4518-a4df-45e1b7cc053d",
+  "caseId": "b24945b4-4961-4518-a4df-45e1b7cc053d",
+  "runId": "20260704T021302Z.eval-studio-apple-system-default",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T02:13:05.338Z",
+  "runtime": {
+    "provider": "apple",
+    "model": "system-default",
+    "temperature": 0,
+    "metadata": {
+      "systemVersion": "Version 26.5.1 (Build 25F80)"
+    }
+  },
+  "promptVariables": {
+    "context": "hola que tal como "
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Eres el autocompletado de un teclado, no un asistente que responde al\nusuario. Continúa el texto como si fueras su autor.\n\nDevuelve ÚNICAMENTE las próximas 1 a 3 palabras más probables, en el mismo\nidioma, tono y persona gramatical del texto. Nada más: sin comillas, sin\netiquetas, sin explicaciones, y sin repetir el texto.\n\nPrefiere la continuación más corta de la que estés seguro: una palabra\nsegura vale más que tres dudosas. No intentes completar la frase entera,\nsolo el siguiente paso.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si\nTexto: \"create a new branch and\"\nRespuesta: push the\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez\nTexto: \"muchas gracias por tu\"\nRespuesta: ayuda\n\nTexto hasta el cursor:\nantes de tocar nada crea una rama nueva y sube los\n\nContinuación:"
+  },
+  "providerRequest": {
+    "transport": "process",
+    "target": "apple-foundation-model",
+    "contentType": "application/json",
+    "body": {
+      "mode": "execute",
+      "instructions": "",
+      "prompt": "Eres el autocompletado de un teclado, no un asistente que responde al\nusuario. Continúa el texto como si fueras su autor.\n\nDevuelve ÚNICAMENTE las próximas 1 a 3 palabras más probables, en el mismo\nidioma, tono y persona gramatical del texto. Nada más: sin comillas, sin\netiquetas, sin explicaciones, y sin repetir el texto.\n\nPrefiere la continuación más corta de la que estés seguro: una palabra\nsegura vale más que tres dudosas. No intentes completar la frase entera,\nsolo el siguiente paso.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si\nTexto: \"create a new branch and\"\nRespuesta: push the\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez\nTexto: \"muchas gracias por tu\"\nRespuesta: ayuda\n\nTexto hasta el cursor:\nantes de tocar nada crea una rama nueva y sube los\n\nContinuación:",
+      "temperature": 0
+    }
+  },
+  "rawOutput": "códigos",
+  "parsedOutput": "códigos",
+  "status": "completed",
+  "error": null,
+  "usage": null,
+  "latencyMs": 2343
+}
