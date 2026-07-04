@@ -1,0 +1,50 @@
+{
+  "resultId": "20260704T022751Z.eval-studio-ollama-llama3.1-8b.dac1a267-497f-4f88-b4b5-43c62a663ed7",
+  "caseId": "dac1a267-497f-4f88-b4b5-43c62a663ed7",
+  "runId": "20260704T022751Z.eval-studio-ollama-llama3.1-8b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-04T02:27:57.403Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "llama3.1:8b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e"
+    }
+  },
+  "promptVariables": {
+    "context": "hola que tal como "
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Eres el autocompletado de un teclado, no un asistente que responde al\nusuario. Continúa el texto como si fueras su autor.\n\nDevuelve ÚNICAMENTE las próximas 1 a 3 palabras más probables, en el mismo\nidioma, tono y persona gramatical del texto. Nada más: sin comillas, sin\netiquetas, sin explicaciones, y sin repetir el texto.\n\nPrefiere la continuación más corta de la que estés seguro: una palabra\nsegura vale más que tres dudosas. No intentes completar la frase entera,\nsolo el siguiente paso.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si\nTexto: \"create a new branch and\"\nRespuesta: push the\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez\nTexto: \"muchas gracias por tu\"\nRespuesta: ayuda\n\nTexto hasta el cursor:\nte paso el informe esta tarde, gracias de\n\nContinuación:"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "llama3.1:8b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Eres el autocompletado de un teclado, no un asistente que responde al\nusuario. Continúa el texto como si fueras su autor.\n\nDevuelve ÚNICAMENTE las próximas 1 a 3 palabras más probables, en el mismo\nidioma, tono y persona gramatical del texto. Nada más: sin comillas, sin\netiquetas, sin explicaciones, y sin repetir el texto.\n\nPrefiere la continuación más corta de la que estés seguro: una palabra\nsegura vale más que tres dudosas. No intentes completar la frase entera,\nsolo el siguiente paso.\n\nEjemplos:\nTexto: \"quiero que revises el código y\"\nRespuesta: me digas si\nTexto: \"create a new branch and\"\nRespuesta: push the\nTexto: \"El problema principal de esta propuesta es\"\nRespuesta: que no define\nTexto: \"Podemos quedar mañana a las\"\nRespuesta: diez\nTexto: \"muchas gracias por tu\"\nRespuesta: ayuda\n\nTexto hasta el cursor:\nte paso el informe esta tarde, gracias de\n\nContinuación:"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "me lo muestres",
+  "parsedOutput": "me lo muestres",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 260,
+    "outputTokens": 6,
+    "costUsd": null
+  },
+  "latencyMs": 5458
+}
