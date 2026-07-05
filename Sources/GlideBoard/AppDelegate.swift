@@ -12,13 +12,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var keyboardView: KeyboardView!
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
+    /// Claims the physical Tab key while a ghost is on screen, so the phrase
+    /// suggestion can be accepted word by word without touching the mouse.
+    private var tabInterceptor: KeyInterceptor?
     private var settingsController: SettingsWindowController?
     private var console: ModelConsole?
     /// The most recent non-self frontmost app — the one receiving injected text.
     private var lastExternalApp: NSRunningApplication?
     private var history: TextHistoryConsole?
-    private var evalExporter: EvalExporter?
-    private var evalCaptureMenuItem: NSMenuItem?
+    private var phraseMemories: [String: PhraseMemory] = [:]
+    private var memoryConsole: MemoryConsole?
+    private var phraseMemory: PhraseMemory? { phraseMemories[language.rawValue] }
+
+    /// First run only: replay the persisted sent texts so the memory doesn't
+    /// start cold. Live learning (on every send) takes over from there.
+    private func seedPhraseMemoryIfEmpty() {
+        guard let memory = phraseMemory, memory.contextCount == 0,
+              let contents = try? String(contentsOf: TextHistoryConsole.persistedLogURL,
+                                         encoding: .utf8) else { return }
+        struct StoredEntry: Codable { let date: Date; let text: String }
+        let decoder = JSONDecoder()
+        for line in contents.split(separator: "\n") {
+            guard let entry = try? decoder.decode(StoredEntry.self, from: Data(line.utf8)) else { continue }
+            memory.learn(text: entry.text)
+        }
+    }
     private var toggleMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
@@ -67,6 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
         bigrams[Language.english.rawValue] = BigramModel(language: .english)
         bigrams[Language.spanish.rawValue] = BigramModel(language: .spanish)
+        phraseMemories[Language.english.rawValue] = PhraseMemory(language: .english)
+        phraseMemories[Language.spanish.rawValue] = PhraseMemory(language: .spanish)
+        seedPhraseMemoryIfEmpty()
 
         // Track which external app is frontmost so we can hand keyboard focus
         // back to it when injecting text (without hiding our own panel).
@@ -91,10 +112,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
         QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
 
-        // Eval workspace (<repo>/evals): phrase-completion contexts become
-        // cases once the sent text reveals what the user wrote after them.
-        evalExporter = EvalExporter()
-        QueryLog.shared.evalSink = { [weak self] query in self?.evalExporter?.attach(query) }
         applyHotKey()
         applyCompletionEngine()
         showPanel()
@@ -173,6 +190,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     private func showPanel() {
         panel.orderFrontRegardless()
+        ensureTabInterceptor()
+    }
+
+    /// The event tap can't be created until the Accessibility permission is
+    /// granted, so keep retrying whenever the panel is shown.
+    private func ensureTabInterceptor() {
+        guard tabInterceptor == nil else { return }
+        tabInterceptor = KeyInterceptor { [weak self] keyCode, flags, isRepeat in
+            guard keyCode == KeyInterceptor.tabKey, !isRepeat,
+                  flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty,
+                  let self, self.panel.isVisible,
+                  self.tapBuffer.isEmpty,
+                  let ghost = self.keyboardView.ghost else { return false }
+            // Don't do work inside the tap callback — stalls get the tap
+            // disabled by the system.
+            DispatchQueue.main.async {
+                self.keyboardView.flash("⇥")
+                self.acceptGhostFirstWord(self.keyboardView, ghost: ghost)
+            }
+            return true
+        }
+        if tabInterceptor == nil {
+            NSLog("GlideBoard: Tab interceptor unavailable — waiting for Accessibility permission")
+        }
     }
 
     private func hidePanel() {
@@ -267,8 +308,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let text = composerText
         // Safety net: persist the text BEFORE any delivery step can lose it.
         history?.record(text)
-        // The sent text is the ground truth for pending completion captures.
-        evalExporter?.finalize(sentText: text)
+        // Sent text is definitive material for the personal phrase memory.
+        phraseMemory?.learn(text: text)
+        memoryConsole?.refresh()
         composerDeliveryInProgress = true
         if panel.isKeyWindow {
             // The composer was clicked, so our nonactivating panel holds key
@@ -421,10 +463,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         // Where the text will land (app, window, field) — read via AX so the
         // model knows if it's completing a mail, a chat, a code editor…
         let target = FocusedFieldReader.targetDescription(in: lastExternalApp)
-        // Captured at request time: even if the next word cancels this query,
-        // the context is a valid eval case once the ground truth is known.
-        evalExporter?.captureContext(context, target: target)
         QueryLog.shared.currentSource = source
+
+        // Tier 1 — personal phrase memory: instant, free, and only speaks
+        // when its evidence is strong. A hit skips the LLM entirely.
+        if let hit = phraseMemory?.suggest(context: context) {
+            keyboardView.ghost = hit.word
+            QueryLog.shared.record(kind: "✦ frase", isPhrase: true,
+                                   engine: "Memoria (\(hit.order)-grama)", ms: 0,
+                                   context: context, target: target,
+                                   raw: "\(hit.word) ×\(Int(hit.count)) · \(Int(hit.share * 100))% del contexto «\(PhraseMemory.tokens(context).suffix(hit.order).joined(separator: " "))»",
+                                   cleaned: hit.word)
+            return
+        }
+
+        // Tier 2 — LLM (Apple/Ollama).
         completionTask = Task { @MainActor [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -553,14 +606,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let debug = NSMenuItem(title: "Consola del modelo (en vivo)…", action: #selector(openDebug), keyEquivalent: "")
         debug.target = self
         menu.addItem(debug)
+        let memory = NSMenuItem(title: "Memoria de predicciones…", action: #selector(openMemoryConsole), keyEquivalent: "")
+        memory.target = self
+        menu.addItem(memory)
         let textHistory = NSMenuItem(title: "Histórico de texto introducido…", action: #selector(openHistory), keyEquivalent: "")
         menu.addItem(textHistory)
-        let evalCapture = NSMenuItem(title: "Generar evals al escribir",
-                                     action: #selector(toggleEvalCapture), keyEquivalent: "")
-        evalCapture.target = self
-        evalCapture.state = Settings.evalCaptureEnabled ? .on : .off
-        menu.addItem(evalCapture)
-        evalCaptureMenuItem = evalCapture
         menu.addItem(.separator())
         let es = NSMenuItem(title: "Español", action: #selector(setSpanish), keyEquivalent: "")
         es.target = self
@@ -597,6 +647,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
     }
 
+    @objc private func openMemoryConsole() {
+        if memoryConsole == nil {
+            memoryConsole = MemoryConsole()
+            memoryConsole?.memorySource = { [weak self] in self?.phraseMemory }
+        }
+        if memoryConsole!.isVisible {
+            memoryConsole!.close()
+        } else {
+            memoryConsole!.attach(to: panel)
+        }
+    }
+
     @objc private func openHistory() {
         if history == nil {
             history = TextHistoryConsole()
@@ -611,14 +673,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     // MARK: - Settings
-
-    @objc private func toggleEvalCapture() {
-        Settings.evalCaptureEnabled.toggle()
-        evalCaptureMenuItem?.state = Settings.evalCaptureEnabled ? .on : .off
-        keyboardView.flash(Settings.evalCaptureEnabled
-                           ? "Generando evals al escribir"
-                           : "Generación de evals desactivada")
-    }
 
     @objc private func openSettings() {
         if settingsController == nil {
@@ -663,6 +717,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         if wasVisible { showPanel() }
         if let console, console.isVisible {
             console.attach(to: panel)
+        }
+        if let memoryConsole, memoryConsole.isVisible {
+            memoryConsole.attach(to: panel)
         }
         if let history, history.isVisible {
             history.attach(to: panel)
@@ -1042,7 +1099,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             return
         }
         QueryLog.shared.recordPhraseAccepted()
-        evalExporter?.ghostAccepted(ghost)
         let needsSpace = lastOutputEndsInWordChar && tapBuffer.isEmpty
         tapBuffer = ""
         emitText((needsSpace ? " " : "") + first)
@@ -1058,7 +1114,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     func keyboardView(_ view: KeyboardView, didPickGhost text: String) {
         QueryLog.shared.recordPhraseAccepted()
-        evalExporter?.ghostAccepted(text)
         // Mid-word the continuation glues onto the partial word — no space.
         let needsSpace = lastOutputEndsInWordChar && tapBuffer.isEmpty
         tapBuffer = ""

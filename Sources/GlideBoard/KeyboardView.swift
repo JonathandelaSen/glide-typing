@@ -200,7 +200,7 @@ final class KeyboardView: NSView {
     }
 
     private func setupComposer() {
-        composerView = NSTextView()
+        composerView = ComposerTextView()
         composerView.isRichText = false
         composerView.font = NSFont.systemFont(ofSize: 14)
         composerView.textColor = .white

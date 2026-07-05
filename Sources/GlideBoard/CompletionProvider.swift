@@ -26,8 +26,10 @@ final class QueryLog {
     var currentSource = "—"
     var sink: ((ModelQuery) -> Void)?
     var phraseAcceptedSink: (() -> Void)?
-    /// Feeds the eval exporter: every query is a potential eval case.
-    var evalSink: ((ModelQuery) -> Void)?
+
+    /// Ghost pipeline tallies for the decision-flow diagram (main thread).
+    private(set) var phraseMemoryHits = 0
+    private(set) var phraseLLMCalls = 0
 
     func record(kind: String, isPhrase: Bool, engine: String, ms: Int,
                 context: String, target: String? = nil, raw: String, cleaned: String) {
@@ -36,8 +38,11 @@ final class QueryLog {
                                raw: raw.trimmingCharacters(in: .whitespacesAndNewlines),
                                cleaned: cleaned)
         DispatchQueue.main.async {
+            if query.isPhrase {
+                if query.engine.hasPrefix("Memoria") { self.phraseMemoryHits += 1 }
+                else { self.phraseLLMCalls += 1 }
+            }
             self.sink?(query)
-            self.evalSink?(query)
         }
     }
 

@@ -10,6 +10,7 @@ final class ModelConsole {
 
     private var phraseCount = 0, phraseMs = 0, phraseEmpty = 0
     private var phraseAccepted = 0
+    private var phraseFromMemory = 0
     private var wordCount = 0, wordMs = 0, wordEmpty = 0
     private var queries: [ModelQuery] = []
 
@@ -126,6 +127,7 @@ final class ModelConsole {
     private func format(_ q: ModelQuery) -> String {
         """
         [\(q.kind)] \(q.ms)ms · \(q.engine) · \(q.source) · \(Self.timeFormat.string(from: q.date))
+        dst: \(q.target ?? "—")
         ctx: \(q.context)
         raw: \(q.raw)
         →:   \(q.cleaned)
@@ -140,6 +142,7 @@ final class ModelConsole {
     func record(_ q: ModelQuery) {
         if q.isPhrase {
             phraseCount += 1; phraseMs += q.ms; if q.isEmpty { phraseEmpty += 1 }
+            if q.engine.hasPrefix("Memoria") { phraseFromMemory += 1 }
         } else {
             wordCount += 1; wordMs += q.ms; if q.isEmpty { wordEmpty += 1 }
         }
@@ -163,7 +166,7 @@ final class ModelConsole {
         var parts: [String] = []
         if phraseCount > 0 {
             let shown = max(1, phraseCount - phraseEmpty)
-            parts.append("✦ n=\(phraseCount) μ=\(phraseMs / phraseCount)ms vacías=\(phraseEmpty * 100 / phraseCount)% aceptadas=\(phraseAccepted * 100 / shown)%")
+            parts.append("✦ n=\(phraseCount) (mem \(phraseFromMemory) · llm \(phraseCount - phraseFromMemory)) μ=\(phraseMs / phraseCount)ms vacías=\(phraseEmpty * 100 / phraseCount)% aceptadas=\(phraseAccepted * 100 / shown)%")
         }
         if wordCount > 0 {
             parts.append("palabra n=\(wordCount) μ=\(wordMs / wordCount)ms vacías=\(wordEmpty * 100 / wordCount)%")
@@ -203,6 +206,9 @@ final class ModelConsole {
             ]))
 
         let headerField = makeField(header)
+        let targetField = makeField(line("dst", q.target ?? "—",
+                                         color: NSColor(calibratedRed: 0.75, green: 0.65, blue: 0.95, alpha: 1)))
+        targetField.maximumNumberOfLines = 1
         let contextField = makeField(line("ctx", q.context, color: NSColor(calibratedWhite: 0.6, alpha: 1)))
         contextField.maximumNumberOfLines = 3
         let rawField = makeField(line("raw", q.raw, color: NSColor(calibratedWhite: 0.78, alpha: 1)))
@@ -219,7 +225,7 @@ final class ModelConsole {
         headerRow.orientation = .horizontal
         headerRow.spacing = 4
 
-        let inner = NSStackView(views: [headerRow, contextField, rawField, cleanField])
+        let inner = NSStackView(views: [headerRow, targetField, contextField, rawField, cleanField])
         inner.orientation = .vertical
         inner.alignment = .leading
         inner.spacing = 3
@@ -330,6 +336,9 @@ final class TextHistoryConsole {
         let date: Date
         let text: String
     }
+
+    /// Where sent texts are persisted — the phrase memory seeds from it.
+    static var persistedLogURL: URL { logURL }
 
     private static let logURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,

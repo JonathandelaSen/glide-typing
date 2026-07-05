@@ -31,13 +31,6 @@ enum Settings {
         set { defaults.set(newValue, forKey: "ollamaModel") }
     }
 
-    /// Capture typing sessions as Eval Studio cases/runs in <repo>/evals.
-    /// Off by default: normal keyboard use must not generate eval artifacts.
-    static var evalCaptureEnabled: Bool {
-        get { defaults.object(forKey: "evalCaptureEnabled") as? Bool ?? false }
-        set { defaults.set(newValue, forKey: "evalCaptureEnabled") }
-    }
-
     /// Composer mode: compose text in the panel, insert into the app on demand.
     static var composerMode: Bool {
         get { defaults.object(forKey: "composerMode") as? Bool ?? true }
