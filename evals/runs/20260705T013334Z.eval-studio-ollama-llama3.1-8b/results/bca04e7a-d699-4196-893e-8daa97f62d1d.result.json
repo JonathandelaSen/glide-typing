@@ -1,0 +1,47 @@
+{
+  "resultId": "20260705T013334Z.eval-studio-ollama-llama3.1-8b.bca04e7a-d699-4196-893e-8daa97f62d1d",
+  "caseId": "bca04e7a-d699-4196-893e-8daa97f62d1d",
+  "runId": "20260705T013334Z.eval-studio-ollama-llama3.1-8b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-05T01:33:41.884Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "llama3.1:8b",
+    "temperature": 0,
+    "metadata": {
+      "modelDigest": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Continue the sentence with one or 2 words and only replay them. Sentence: 'cuando termines los cambios abre una pull'"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "llama3.1:8b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Continue the sentence with one or 2 words and only replay them. Sentence: 'cuando termines los cambios abre una pull'"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 0
+      }
+    }
+  },
+  "rawOutput": "la cuenta.",
+  "parsedOutput": "la cuenta.",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 37,
+    "outputTokens": 4,
+    "costUsd": null
+  },
+  "latencyMs": 4698
+}

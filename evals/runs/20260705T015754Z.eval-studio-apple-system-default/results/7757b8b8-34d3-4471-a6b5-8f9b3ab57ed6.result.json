@@ -1,0 +1,36 @@
+{
+  "resultId": "20260705T015754Z.eval-studio-apple-system-default.7757b8b8-34d3-4471-a6b5-8f9b3ab57ed6",
+  "caseId": "7757b8b8-34d3-4471-a6b5-8f9b3ab57ed6",
+  "runId": "20260705T015754Z.eval-studio-apple-system-default",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-05T01:58:25.581Z",
+  "runtime": {
+    "provider": "apple",
+    "model": "system-default",
+    "temperature": 1,
+    "metadata": {
+      "systemVersion": "Version 26.5.1 (Build 25F80)"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Continue the sentence with the next word, only one. Sentence: 'te paso el informe esta tarde, gracias de'"
+  },
+  "providerRequest": {
+    "transport": "process",
+    "target": "apple-foundation-model",
+    "contentType": "application/json",
+    "body": {
+      "mode": "execute",
+      "instructions": "",
+      "prompt": "Continue the sentence with the next word, only one. Sentence: 'te paso el informe esta tarde, gracias de'",
+      "temperature": 1
+    }
+  },
+  "rawOutput": "\"por supuesto.\"",
+  "parsedOutput": "por supuesto.",
+  "status": "completed",
+  "error": null,
+  "usage": null,
+  "latencyMs": 1219
+}

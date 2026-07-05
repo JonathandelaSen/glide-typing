@@ -1,0 +1,47 @@
+{
+  "resultId": "20260705T015754Z.eval-studio-ollama-gemma4-e2b.7757b8b8-34d3-4471-a6b5-8f9b3ab57ed6",
+  "caseId": "7757b8b8-34d3-4471-a6b5-8f9b3ab57ed6",
+  "runId": "20260705T015754Z.eval-studio-ollama-gemma4-e2b",
+  "producer": "eval-studio",
+  "createdAt": "2026-07-05T01:58:24.358Z",
+  "runtime": {
+    "provider": "ollama",
+    "model": "gemma4:e2b",
+    "temperature": 1,
+    "metadata": {
+      "modelDigest": "7fbdbf8f5e45a75bb122155ed546e765b4d9c53a1285f62fd9f506baa1c5a47e"
+    }
+  },
+  "renderedPrompt": {
+    "format": "text",
+    "text": "Continue the sentence with the next word, only one. Sentence: 'te paso el informe esta tarde, gracias de'"
+  },
+  "providerRequest": {
+    "transport": "http",
+    "target": "http://localhost:11434/api/chat",
+    "contentType": "application/json",
+    "body": {
+      "model": "gemma4:e2b",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Continue the sentence with the next word, only one. Sentence: 'te paso el informe esta tarde, gracias de'"
+        }
+      ],
+      "stream": false,
+      "options": {
+        "temperature": 1
+      }
+    }
+  },
+  "rawOutput": "corazón",
+  "parsedOutput": "corazón",
+  "status": "completed",
+  "error": null,
+  "usage": {
+    "inputTokens": 40,
+    "outputTokens": 396,
+    "costUsd": null
+  },
+  "latencyMs": 13812
+}
