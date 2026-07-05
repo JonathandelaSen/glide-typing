@@ -137,6 +137,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                      target: self, action: #selector(composerModeChanged(_:)))
         composerCheck.state = Settings.composerMode ? .on : .off
 
+        let surroundingCheck = NSButton(checkboxWithTitle: "leer texto visible alrededor del campo (auditable en la consola)",
+                                        target: self, action: #selector(surroundingContextChanged(_:)))
+        surroundingCheck.state = Settings.surroundingContextEnabled ? .on : .off
+
         let grid = NSGridView(views: [
             [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
             [makeLabel("Atajo escribir en borrador:"), focusShortcutField],
@@ -145,7 +149,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [makeLabel("Área de borrador:"), composerCheck],
             [makeLabel("Glide sin clic:"), hoverCheck],
             [makeLabel("Completado IA (✦):"), enginePopup],
-            [makeLabel("Modelo de Ollama:"), ollamaModelPopup]
+            [makeLabel("Modelo de Ollama:"), ollamaModelPopup],
+            [makeLabel("Contexto para instrucciones:"), surroundingCheck]
         ])
         grid.rowSpacing = 14
         grid.columnSpacing = 12
@@ -277,6 +282,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func composerModeChanged(_ sender: NSButton) {
         Settings.composerMode = sender.state == .on
         onComposerModeChange?(Settings.composerMode)
+    }
+
+    @objc private func surroundingContextChanged(_ sender: NSButton) {
+        Settings.surroundingContextEnabled = sender.state == .on
     }
 
     @objc private func hoverGlideChanged(_ sender: NSButton) {

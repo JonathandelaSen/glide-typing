@@ -25,8 +25,35 @@ precondition(TransformCleaner.clean("   ") == nil)
 
 // Prompts embed the text and demand a bare answer.
 precondition(TransformAction.fix.prompt(for: "ola ke ase").contains("ola ke ase"))
-precondition(TransformAction.translate.instructions.contains("ÚNICAMENTE"))
+precondition(TransformAction.allCases.allSatisfy { $0.instructions.contains("ÚNICAMENTE") })
 precondition(TransformAction.fix.maxTokens(for: "corto") >= 80)
+
+// Delivery split: predictable actions in place, the rest via board preview.
+precondition(TransformAction.fix.deliversInPlace && TransformAction.translate.deliversInPlace)
+precondition(!TransformAction.formal.deliversInPlace && !TransformAction.shorten.deliversInPlace)
+
+// Prompt-anywhere body: every context piece present and labelled, in order.
+let body = PromptAnywhere.prompt(instruction: "declina la reunión",
+                                 draft: "borrador previo",
+                                 context: "hilo del chat",
+                                 target: "Slack — #dev")
+precondition(body.contains("Destino: Slack — #dev"))
+precondition(body.contains("Contexto visible:\nhilo del chat"))
+precondition(body.contains("Borrador actual:\nborrador previo"))
+precondition(body.hasSuffix("Resultado:"))
+precondition(PromptAnywhere.prompt(instruction: "hola", draft: nil, context: nil, target: nil)
+    == "Instrucción: hola\n\nResultado:")
+
+// Instruction history: newest first, deduped, capped at 20.
+UserDefaults.standard.removeObject(forKey: "promptHistory")
+Settings.promptHistory = (1...30).map { "instrucción \($0)" }
+precondition(Settings.promptHistory.count == 20)
+UserDefaults.standard.removeObject(forKey: "promptHistory")
+
+// Surrounding context is strictly opt-in.
+UserDefaults.standard.removeObject(forKey: "surroundingContextEnabled")
+precondition(Settings.surroundingContextEnabled == false)
+precondition(Settings.surroundingContextExcludedApps.contains { "com.1password.mac".hasPrefix($0) })
 
 // Clipboard restore: the paste fallback must give the user's clipboard back.
 let pasteboard = NSPasteboard.general

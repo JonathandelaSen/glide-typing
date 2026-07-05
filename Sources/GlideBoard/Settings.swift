@@ -40,6 +40,30 @@ enum Settings {
         set { defaults.set(NSNumber(value: newValue), forKey: "transformHotKeyModifiers") }
     }
 
+    /// Plan B: opt-in to reading visible text around the focused field (AX)
+    /// as context for free-instruction generation. Off by default — it reads
+    /// screen content beyond the field itself.
+    static var surroundingContextEnabled: Bool {
+        get { defaults.object(forKey: "surroundingContextEnabled") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "surroundingContextEnabled") }
+    }
+
+    /// Bundle-id prefixes never read for surrounding context (password
+    /// managers, banking…).
+    static var surroundingContextExcludedApps: [String] {
+        get {
+            defaults.stringArray(forKey: "surroundingContextExcludedApps")
+                ?? ["com.1password", "com.agilebits", "com.apple.Passwords", "com.lastpass"]
+        }
+        set { defaults.set(newValue, forKey: "surroundingContextExcludedApps") }
+    }
+
+    /// Recent free instructions (prompt-anywhere), newest first.
+    static var promptHistory: [String] {
+        get { defaults.stringArray(forKey: "promptHistory") ?? [] }
+        set { defaults.set(Array(newValue.prefix(20)), forKey: "promptHistory") }
+    }
+
     static var language: Language {
         get { Language(rawValue: defaults.string(forKey: "language") ?? "") ?? .spanish }
         set { defaults.set(newValue.rawValue, forKey: "language") }

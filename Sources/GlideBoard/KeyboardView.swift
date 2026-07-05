@@ -24,6 +24,8 @@ protocol KeyboardViewDelegate: AnyObject {
     /// Copy the composer buffer to the clipboard (used when there is no
     /// editable text target to inject into).
     func keyboardViewDidRequestCopy(_ view: KeyboardView)
+    /// The ✨ chip: open the transform/instruction menu (plans A+B).
+    func keyboardViewDidRequestTransform(_ view: KeyboardView)
     /// The composer grew or shrank: the panel must resize.
     func keyboardViewDidResize(_ view: KeyboardView)
     /// Show/hide the typed-text history panel.
@@ -192,6 +194,16 @@ final class KeyboardView: NSView {
         composerContentChanged()
     }
 
+    /// Replace the whole draft (transform previews, generated text), leaving
+    /// the caret at the end so glide/ghost continue from there.
+    func composerSetText(_ s: String) {
+        composerProgrammatic = true
+        composerView.string = s
+        composerView.setSelectedRange(NSRange(location: (s as NSString).length, length: 0))
+        composerProgrammatic = false
+        composerContentChanged()
+    }
+
     func composerContentChanged() {
         updateGhostLabel()
         updateComposerHeight()
@@ -238,9 +250,8 @@ final class KeyboardView: NSView {
     private func layoutComposer() {
         guard composerScroll != nil, let rect = ghostRect else { return }
         composerScroll.isHidden = !composerEnabled
-        let chip = insertChipRect
         composerScroll.frame = CGRect(x: rect.minX + 4, y: rect.minY + 3,
-                                      width: (chip?.minX ?? rect.maxX) - rect.minX - 12,
+                                      width: (chipsLeftEdge ?? rect.maxX) - rect.minX - 12,
                                       height: rect.height - 6)
     }
 
@@ -438,6 +449,20 @@ final class KeyboardView: NSView {
         return CGRect(x: row.maxX - 40, y: row.minY + 3, width: 36, height: row.height - 6)
     }
 
+    /// "✨ transform/instruction" chip, immediately left of the insert chip
+    /// (or at the right end when the insert chip is hidden). Available on the
+    /// board so the menu can be opened one-handed, without the ⌘⌥T shortcut.
+    private var transformChipRect: CGRect? {
+        guard composerEnabled, let row = ghostRect else { return nil }
+        let rightEdge = insertChipRect?.minX ?? (row.maxX - 4)
+        return CGRect(x: rightEdge - 36, y: row.minY + 3, width: 32, height: row.height - 6)
+    }
+
+    /// Leftmost edge of the trailing chips — where the text area must stop.
+    private var chipsLeftEdge: CGFloat? {
+        transformChipRect?.minX ?? insertChipRect?.minX
+    }
+
     private var predictionRects: [CGRect] {
         rowRects(count: predictions.count,
                  y: barHeight + topRowHeight + 1,
@@ -502,9 +527,11 @@ final class KeyboardView: NSView {
             return
         }
 
-        // Composer row: insert chip, or click to accept the inline ghost.
+        // Composer row: transform chip, insert chip, or click to accept ghost.
         if let rect = ghostRect, rect.contains(p) {
-            if let chip = insertChipRect, chip.insetBy(dx: -3, dy: -3).contains(p) {
+            if let chip = transformChipRect, chip.insetBy(dx: -3, dy: -3).contains(p) {
+                delegate?.keyboardViewDidRequestTransform(self)
+            } else if let chip = insertChipRect, chip.insetBy(dx: -3, dy: -3).contains(p) {
                 if !hasTextTarget {
                     // No field to inject into: copy the buffer to the clipboard.
                     delegate?.keyboardViewDidRequestCopy(self)
@@ -1214,7 +1241,7 @@ final class KeyboardView: NSView {
 
         let chip = insertChipRect
         let textArea = CGRect(x: rect.minX + 10, y: rect.minY,
-                              width: (chip?.minX ?? rect.maxX) - rect.minX - 16,
+                              width: (chipsLeftEdge ?? rect.maxX) - rect.minX - 16,
                               height: rect.height)
 
         // The text itself lives in the embedded NSTextView; draw only the
@@ -1240,6 +1267,18 @@ final class KeyboardView: NSView {
             ])
             let gSize = glyph.size()
             glyph.draw(at: CGPoint(x: chip.midX - gSize.width / 2, y: chip.midY - gSize.height / 2))
+        }
+
+        if let transformChip = transformChipRect {
+            NSColor(calibratedRed: 0.55, green: 0.35, blue: 0.85, alpha: 0.5).setFill()
+            NSBezierPath(roundedRect: transformChip, xRadius: 6, yRadius: 6).fill()
+            let glyph = NSAttributedString(string: "✨", attributes: [
+                .font: NSFont.systemFont(ofSize: 14),
+                .foregroundColor: NSColor.white
+            ])
+            let gSize = glyph.size()
+            glyph.draw(at: CGPoint(x: transformChip.midX - gSize.width / 2,
+                                   y: transformChip.midY - gSize.height / 2))
         }
     }
 

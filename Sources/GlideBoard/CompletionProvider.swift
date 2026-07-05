@@ -59,6 +59,10 @@ protocol CompletionProvider {
     func complete(context: String, target: String?) async throws -> String?
     /// Apply `action` to `text`, returning only the transformed text.
     func transform(action: TransformAction, text: String) async throws -> String?
+    /// Generate new text from a free instruction (prompt-anywhere). `draft`
+    /// is the board's current draft when iterating over one.
+    func generate(instruction: String, draft: String?,
+                  context: String?, target: String?) async throws -> String?
 }
 
 enum CompletionCleaner {
@@ -170,6 +174,23 @@ final class SystemModelProvider: CompletionProvider {
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }
+
+    func generate(instruction: String, draft: String?,
+                  context: String?, target: String?) async throws -> String? {
+        let session = LanguageModelSession(instructions: PromptAnywhere.instructions)
+        let options = GenerationOptions(temperature: 0.4,
+                                        maximumResponseTokens: PromptAnywhere.maxTokens(for: instruction))
+        let body = PromptAnywhere.prompt(instruction: instruction, draft: draft,
+                                         context: context, target: target)
+        let start = Date()
+        let response = try await session.respond(to: body, options: options)
+        let cleaned = TransformCleaner.clean(response.content)
+        QueryLog.shared.record(kind: "✍️ instrucción", isPhrase: false, engine: "Apple",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: body, target: target, raw: response.content,
+                               cleaned: cleaned ?? "(nada)")
+        return cleaned
+    }
 }
 
 // MARK: - Ollama (local HTTP server, user-selectable model)
@@ -231,6 +252,24 @@ final class OllamaProvider: CompletionProvider {
                                engine: "Ollama (\(Settings.ollamaModel))",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
                                context: text, raw: response,
+                               cleaned: cleaned ?? "(nada)")
+        return cleaned
+    }
+
+    func generate(instruction: String, draft: String?,
+                  context: String?, target: String?) async throws -> String? {
+        let body = PromptAnywhere.prompt(instruction: instruction, draft: draft,
+                                         context: context, target: target)
+        let prompt = PromptAnywhere.instructions + "\n\n" + body
+        let start = Date()
+        guard let response = try await generate(prompt: prompt,
+                                                maxTokens: PromptAnywhere.maxTokens(for: instruction),
+                                                temperature: 0.4) else { return nil }
+        let cleaned = TransformCleaner.clean(response)
+        QueryLog.shared.record(kind: "✍️ instrucción", isPhrase: false,
+                               engine: "Ollama (\(Settings.ollamaModel))",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: body, target: target, raw: response,
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }

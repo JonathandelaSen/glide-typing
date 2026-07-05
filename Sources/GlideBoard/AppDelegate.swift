@@ -114,6 +114,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         transformer = TextTransformer(
             provider: { [weak self] in self?.completionProvider },
             targetApp: { [weak self] in self?.lastExternalApp },
+            composerDraft: { [weak self] requireFocus in
+                // Iteration mode: operate on the board's draft. The ⌘⌥T
+                // shortcut requires the composer to hold focus (it can fire
+                // from any app); the on-board ✨ chip does not.
+                guard let self, self.composerEnabled, !self.composerText.isEmpty,
+                      !requireFocus || self.panel.isKeyWindow else { return nil }
+                return self.composerText
+            },
+            preview: { [weak self] text in self?.presentDraft(text) },
             notify: { [weak self] message in
                 guard let self else { return }
                 if self.panel.isVisible {
@@ -564,6 +573,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private func resetWordState() {
         tapBuffer = ""
         lastInsertedWord = nil
+    }
+
+    /// A transform/instruction result lands in the composer for review:
+    /// editable with glide, ghosts and predictions active, and injected on
+    /// demand with the usual composer flow.
+    private func presentDraft(_ text: String) {
+        guard composerEnabled else {
+            // Without a composer there is nowhere to review: type it directly.
+            TextInjector.type(text)
+            history?.record(text)
+            appendRecent(text)
+            return
+        }
+        keyboardView.composerSetText(text)
+        showPanel()
+        focusComposer(panel: panel, composer: keyboardView.composerView)
+        resetWordState()
+        syncWordStateFromComposer()
+        showTapCompletions()
+        refreshPredictions()
+        requestCompletion(afterDelay: 0.3)
     }
 
     // MARK: - NSTextViewDelegate: the user edits the composer directly
@@ -1081,6 +1111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         NSPasteboard.general.setString(text, forType: .string)
         history?.record(text)
         view.flash("copiado")
+    }
+
+    func keyboardViewDidRequestTransform(_ view: KeyboardView) {
+        transformer?.begin(fromBoard: true)
     }
 
     func keyboardViewDidResize(_ view: KeyboardView) {

@@ -246,6 +246,84 @@ enum FocusedFieldReader {
         return AXUIElementSetAttributeValue(element, attribute, text as CFString) == .success
     }
 
+    // MARK: - Surrounding context (prompt-anywhere)
+
+    /// Visible text around the focused field — chat messages, quoted emails —
+    /// collected from the AX tree with a hard character cap and deadline: the
+    /// tree can be huge and slow, so this samples rather than walks it whole.
+    /// Everything returned ends up in the debug console via the prompt body,
+    /// so the user can audit exactly what was read.
+    static func surroundingContext(in app: NSRunningApplication?,
+                                   maxLength: Int = 1500,
+                                   timeout: TimeInterval = 0.15) -> String? {
+        guard let focused = focusedElement(in: app) else { return nil }
+        let deadline = Date().addingTimeInterval(timeout)
+
+        // Climb a few levels: siblings near the field carry the conversation.
+        var root = focused
+        for _ in 0..<5 {
+            var parentRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(root, kAXParentAttribute as CFString,
+                                                &parentRef) == .success,
+                  let parentRef, Date() < deadline else { break }
+            let parent = parentRef as! AXUIElement
+            var roleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(parent, kAXRoleAttribute as CFString, &roleRef)
+            root = parent
+            if (roleRef as? String) == (kAXWindowRole as String) { break }
+        }
+
+        var pieces: [String] = []
+        var seen = Set<String>()
+        var collected = 0
+        var visited = 0
+        collectText(from: root, skipping: focused, deadline: deadline,
+                    depth: 0, visited: &visited,
+                    pieces: &pieces, seen: &seen, collected: &collected,
+                    budget: maxLength)
+        guard !pieces.isEmpty else { return nil }
+        // Keep the tail: in chats and mails the recent content sits at the end.
+        let joined = pieces.joined(separator: "\n")
+        return String(joined.suffix(maxLength))
+    }
+
+    private static func collectText(from element: AXUIElement, skipping focused: AXUIElement,
+                                    deadline: Date, depth: Int, visited: inout Int,
+                                    pieces: inout [String], seen: inout Set<String>,
+                                    collected: inout Int, budget: Int) {
+        guard depth < 8, visited < 400, collected < budget, Date() < deadline,
+              !CFEqual(element, focused) else { return }
+        visited += 1
+
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        let role = roleRef as? String
+        if role == (kAXStaticTextRole as String) || role == (kAXTextAreaRole as String) {
+            var valueRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString,
+                                             &valueRef) == .success,
+               let value = valueRef as? String {
+                let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.count > 2, seen.insert(text).inserted {
+                    pieces.append(String(text.prefix(400)))
+                    collected += min(text.count, 400)
+                }
+            }
+        }
+
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString,
+                                            &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for child in children.prefix(30) {
+            collectText(from: child, skipping: focused, deadline: deadline,
+                        depth: depth + 1, visited: &visited,
+                        pieces: &pieces, seen: &seen, collected: &collected,
+                        budget: budget)
+            if collected >= budget || Date() >= deadline { return }
+        }
+    }
+
     /// Fallback for fields without AXValue (Chromium/Electron web content):
     /// ask for the string in the range [caret - maxLength, caret].
     private static func stringBeforeCaretViaRange(_ element: AXUIElement, maxLength: Int) -> String? {
