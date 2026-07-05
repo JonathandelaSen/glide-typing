@@ -1,17 +1,12 @@
 import AppKit
 import Carbon
 
-/// Borderless non-activating panel that can still take key status — needed so
-/// the composer text view can show a caret without activating the app.
-final class FloatingPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, NSTextViewDelegate {
     private var panel: NSPanel!
     private var keyboardView: KeyboardView!
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
+    private var focusHotKey: HotKey?
     /// Claims the physical Tab key while a ghost is on screen, so the phrase
     /// suggestion can be accepted word by word without touching the mouse.
     private var tabInterceptor: KeyInterceptor?
@@ -38,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
     }
     private var toggleMenuItem: NSMenuItem?
+    private var focusMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
     private var targetPollTimer: Timer?
@@ -73,7 +69,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var composerText: String { keyboardView?.composerString ?? "" }
     private var completionProvider: CompletionProvider?
     private var completionTask: Task<Void, Never>?
-    private var wordSuggestTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -113,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
 
         applyHotKey()
+        applyFocusHotKey()
         applyCompletionEngine()
         showPanel()
         startTargetPolling()
@@ -142,13 +138,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     private func applyHotKey() {
         hotKey = nil // unregister the previous one first
-        hotKey = HotKey(keyCode: Settings.hotKeyCode,
+        hotKey = HotKey(id: 1,
+                        keyCode: Settings.hotKeyCode,
                         modifiers: Settings.hotKeyModifiers) { [weak self] in
             self?.togglePanel()
         }
         toggleMenuItem?.title = "Mostrar/Ocultar teclado (\(shortcutDescription(keyCode: Settings.hotKeyCode, modifiers: Settings.hotKeyModifiers)))"
         if hotKey == nil {
             NSLog("GlideBoard: could not register hotkey — it may be taken by another app")
+        }
+    }
+
+    private func applyFocusHotKey() {
+        focusHotKey = nil
+        focusHotKey = HotKey(id: 2,
+                             keyCode: Settings.focusHotKeyCode,
+                             modifiers: Settings.focusHotKeyModifiers) { [weak self] in
+            self?.focusComposerInput()
+        }
+        focusMenuItem?.title = "Escribir en el borrador (\(shortcutDescription(keyCode: Settings.focusHotKeyCode, modifiers: Settings.focusHotKeyModifiers)))"
+        if focusHotKey == nil {
+            NSLog("GlideBoard: could not register composer focus hotkey — it may be taken by another app")
         }
     }
 
@@ -193,6 +203,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         ensureTabInterceptor()
     }
 
+    private func focusComposerInput() {
+        guard composerEnabled else {
+            showPanel()
+            keyboardView.flash("Activa el área de borrador")
+            return
+        }
+        ensureTabInterceptor()
+        focusComposer(panel: panel, composer: keyboardView.composerView)
+    }
+
     /// The event tap can't be created until the Accessibility permission is
     /// granted, so keep retrying whenever the panel is shown.
     private func ensureTabInterceptor() {
@@ -232,7 +252,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         tapBuffer = ""
         recentText = ""
         completionTask?.cancel()
-        wordSuggestTask?.cancel()
     }
 
     // MARK: - AI phrase completion (ghost text)
@@ -513,15 +532,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         guard composerEnabled, !keyboardView.composerProgrammatic else { return }
         keyboardView.composerContentChanged()
         resetWordState()
-        lastOutputEndsInWordChar = keyboardView.composerTextBeforeCaret.last?.isLetter ?? false
-        keyboardView.candidates = []
-        keyboardView.predictions = []
+        syncWordStateFromComposer()
+        showTapCompletions()
+        refreshPredictions()
         requestCompletion(afterDelay: 0.5)
+    }
+
+    /// Direct composer edits (physical keyboard, caret clicks) bypass the
+    /// on-screen keys, so rebuild the word state — partial word and previous
+    /// word — from the text before the caret. This is what keeps the
+    /// completion and prediction rows alive while typing with both hands.
+    private func syncWordStateFromComposer() {
+        let before = keyboardView.composerTextBeforeCaret
+        lastOutputEndsInWordChar = before.last?.isLetter ?? false
+        let words = before.split(whereSeparator: { !$0.isLetter }).map(String.init)
+        if before.last?.isLetter == true {
+            tapBuffer = words.last ?? ""
+            contextWord = words.count >= 2 ? words[words.count - 2] : nil
+        } else {
+            tapBuffer = ""
+            contextWord = words.last
+        }
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
         guard composerEnabled, !keyboardView.composerProgrammatic else { return }
         resetWordState()
+        syncWordStateFromComposer()
+        refreshPredictions()
         if !keyboardView.composerCaretAtEnd {
             keyboardView.ghost = nil
         }
@@ -531,42 +569,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private func commitWord(_ word: String) {
         bigrams[language.rawValue]?.learn(previous: contextWord, word: word)
         contextWord = word
-        wordSuggestTask?.cancel()
-        keyboardView.predictions = []
+        refreshPredictions()
         requestCompletion()
     }
 
-    /// Ask the model for full-word suggestions for the partial word being typed.
-    /// They land in the middle row, complementing the instant dictionary row.
-    private func requestWordSuggestions(afterDelay delay: TimeInterval) {
-        wordSuggestTask?.cancel()
-        guard let provider = completionProvider, !tapBuffer.isEmpty else {
+    /// Local next-word chips for the middle row: instant bigram predictions
+    /// after the current context word, whether it was glided or tapped.
+    /// While a word is being tap-typed, keep only chips that extend it.
+    private func refreshPredictions() {
+        guard let previous = contextWord,
+              let model = bigrams[language.rawValue] else {
             keyboardView.predictions = []
             return
         }
-        let partial = tapBuffer
-        let (rawContext, source) = completionContext()
-        let context = rawContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        QueryLog.shared.currentSource = source
-        wordSuggestTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            if Task.isCancelled { return }
-            let words = (try? await provider.suggestWords(context: context, partial: partial)) ?? []
-            guard let self else { return }
-            // Don't require the text to be untouched — the suggestion is
-            // still valid if it extends whatever the word looks like NOW.
-            let current = self.tapBuffer
-            guard !current.isEmpty else { return }
-            let normCurrent = String(current.lowercased().map(Lexicon.baseKey))
-            let valid = words.filter {
-                let norm = String($0.lowercased().map(Lexicon.baseKey))
-                return (norm.hasPrefix(normCurrent) || Lexicon.isSubsequence(normCurrent, of: norm))
-                    && $0.count > current.count
-            }
-            if !valid.isEmpty {
-                self.keyboardView.predictions = valid
+        var words = model.predict(after: previous, limit: 8)
+        if !tapBuffer.isEmpty {
+            let norm = String(tapBuffer.lowercased().map(Lexicon.baseKey))
+            words = words.filter {
+                String($0.lowercased().map(Lexicon.baseKey)).hasPrefix(norm)
+                    && $0.count > tapBuffer.count
             }
         }
+        keyboardView.predictions = Array(words.prefix(4))
     }
 
     /// If letters were typed key-by-key, close that word as prediction context.
@@ -599,6 +623,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         toggle.target = self
         menu.addItem(toggle)
         toggleMenuItem = toggle
+        let focus = NSMenuItem(title: "Escribir en el borrador (\(shortcutDescription(keyCode: Settings.focusHotKeyCode, modifiers: Settings.focusHotKeyModifiers)))",
+                               action: #selector(menuFocusComposer), keyEquivalent: "")
+        focus.target = self
+        menu.addItem(focus)
+        focusMenuItem = focus
         menu.addItem(.separator())
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
@@ -625,6 +654,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     @objc private func menuToggle() { togglePanel() }
+    @objc private func menuFocusComposer() { focusComposerInput() }
     @objc private func setSpanish() { switchLanguage(.spanish) }
     @objc private func setEnglish() { switchLanguage(.english) }
 
@@ -678,6 +708,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         if settingsController == nil {
             let controller = SettingsWindowController()
             controller.onHotKeyChange = { [weak self] _, _ in self?.applyHotKey() }
+            controller.onFocusHotKeyChange = { [weak self] _, _ in self?.applyFocusHotKey() }
             controller.onLanguageChange = { [weak self] lang in self?.switchLanguage(lang) }
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
             controller.onCompletionEngineChange = { [weak self] in self?.applyCompletionEngine() }
@@ -761,9 +792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
                 lastInsertedWord = nil
                 tapBuffer.append(c)
                 showTapCompletions()
-                requestWordSuggestions(afterDelay: 0.12)
-                // Mid-word, the word suggestion takes priority over the phrase
-                // ghost — give the latter a longer debounce so they don't queue.
+                refreshPredictions()
                 requestCompletion(afterDelay: 0.6)
             } else {
                 emitText(String(c))
@@ -811,7 +840,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
                 if !tapBuffer.isEmpty {
                     tapBuffer.removeLast()
                     showTapCompletions()
-                    requestWordSuggestions(afterDelay: 0.12)
+                    refreshPredictions()
                     requestCompletion(afterDelay: 0.6)
                 }
             }
@@ -901,13 +930,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         emitText(picked)
         lastInsertedWord = picked
         contextWord = picked
+        refreshPredictions()
         requestCompletion()
     }
 
     func keyboardView(_ view: KeyboardView, didPickPrediction index: Int) {
-        // AI word suggestion: replace the partial word with the full word.
-        guard index < view.predictions.count, !tapBuffer.isEmpty else { return }
+        guard index < view.predictions.count else { return }
         let picked = view.predictions[index]
+
+        // No partial word: the chip is the next word — insert it whole.
+        // commitWord refills the row with predictions after `picked`, so
+        // frequent phrases can be chained chip by chip.
+        if tapBuffer.isEmpty {
+            let needsSpace = lastOutputEndsInWordChar
+            emitText((needsSpace ? " " : "") + picked)
+            lastInsertedWord = picked
+            lastInsertedHadLeadingSpace = needsSpace
+            lastOutputEndsInWordChar = true
+            view.candidates = []
+            learnIfNew(picked)
+            commitWord(picked)
+            return
+        }
+
+        // Mid-word: the chip extends the partial word — replace it.
         emitBackspace(tapBuffer.count)
         emitText(picked)
         tapBuffer = ""
@@ -915,7 +961,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         lastInsertedHadLeadingSpace = false
         lastOutputEndsInWordChar = true
         view.candidates = []
-        learnIfNew(picked) // AI knows words the dictionary lacks — keep them
+        learnIfNew(picked)
         commitWord(picked)
     }
 
@@ -1109,6 +1155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         bigrams[language.rawValue]?.learn(previous: contextWord, word: first.lowercased())
         contextWord = first.lowercased()
         view.candidates = []
+        refreshPredictions()
         view.ghost = rest
     }
 
@@ -1134,6 +1181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             }
         }
         contextWord = words.last
+        refreshPredictions()
         requestCompletion()
     }
 }

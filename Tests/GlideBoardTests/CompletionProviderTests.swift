@@ -3,6 +3,29 @@ import ApplicationServices
 @testable import GlideBoard
 
 final class CompletionProviderTests: XCTestCase {
+    func testOllamaCatalogExtractsAndSortsAvailableModelNames() throws {
+        let payload = """
+        {
+          "models": [
+            { "name": "qwen3:4b" },
+            { "name": "gemma3:1b" },
+            { "name": "" }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        XCTAssertEqual(
+            try OllamaModelCatalog.modelNames(from: payload),
+            ["gemma3:1b", "qwen3:4b"]
+        )
+    }
+
+    func testOllamaModelSelectorIsEnabledOnlyForOllama() {
+        XCTAssertTrue(OllamaModelCatalog.isSelectorEnabled(for: "ollama"))
+        XCTAssertFalse(OllamaModelCatalog.isSelectorEnabled(for: "system"))
+        XCTAssertFalse(OllamaModelCatalog.isSelectorEnabled(for: "off"))
+    }
+
     func testFocusedTextTargetRecognizesEditableRoles() {
         XCTAssertTrue(FocusedFieldReader.isEditableTextTarget(role: kAXTextFieldRole as String,
                                                               supportsTextSelection: false))

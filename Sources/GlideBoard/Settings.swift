@@ -15,6 +15,20 @@ enum Settings {
         set { defaults.set(NSNumber(value: newValue), forKey: "hotKeyModifiers") }
     }
 
+    /// Hotkey to show the keyboard and focus its composer.
+    static var focusHotKeyCode: UInt32 {
+        get { (defaults.object(forKey: "focusHotKeyCode") as? NSNumber)?.uint32Value ?? UInt32(kVK_ANSI_G) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "focusHotKeyCode") }
+    }
+
+    static var focusHotKeyModifiers: UInt32 {
+        get {
+            (defaults.object(forKey: "focusHotKeyModifiers") as? NSNumber)?.uint32Value
+                ?? UInt32(cmdKey | optionKey | shiftKey)
+        }
+        set { defaults.set(NSNumber(value: newValue), forKey: "focusHotKeyModifiers") }
+    }
+
     static var language: Language {
         get { Language(rawValue: defaults.string(forKey: "language") ?? "") ?? .spanish }
         set { defaults.set(newValue.rawValue, forKey: "language") }

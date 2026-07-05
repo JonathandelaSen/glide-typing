@@ -55,6 +55,7 @@ final class ShortcutField: NSButton {
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onHotKeyChange: ((UInt32, UInt32) -> Void)?
+    var onFocusHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
     var onCompletionEngineChange: (() -> Void)?
@@ -67,10 +68,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var scaleLabel: NSTextField!
     private var languagePopup: NSPopUpButton!
     private var enginePopup: NSPopUpButton!
-    private var ollamaModelField: NSTextField!
+    private var ollamaModelPopup: NSPopUpButton!
+    private var ollamaModelsTask: Task<Void, Never>?
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 440),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 480),
                               styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         window.title = "Ajustes de GlideBoard"
@@ -90,6 +92,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             Settings.hotKeyCode = code
             Settings.hotKeyModifiers = mods
             self?.onHotKeyChange?(code, mods)
+        }
+
+        let focusShortcutField = ShortcutField(keyCode: Settings.focusHotKeyCode,
+                                               carbonMods: Settings.focusHotKeyModifiers)
+        focusShortcutField.onChange = { [weak self] code, mods in
+            Settings.focusHotKeyCode = code
+            Settings.focusHotKeyModifiers = mods
+            self?.onFocusHotKeyChange?(code, mods)
         }
 
         languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -112,12 +122,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         enginePopup.target = self
         enginePopup.action = #selector(engineChanged)
 
-        ollamaModelField = NSTextField(string: Settings.ollamaModel)
-        ollamaModelField.placeholderString = "p. ej. gemma3:1b"
-        ollamaModelField.target = self
-        ollamaModelField.action = #selector(ollamaModelChanged)
-        ollamaModelField.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        ollamaModelField.isEnabled = Settings.completionEngine == "ollama"
+        ollamaModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        ollamaModelPopup.addItem(withTitle: Settings.ollamaModel)
+        ollamaModelPopup.target = self
+        ollamaModelPopup.action = #selector(ollamaModelChanged)
+        ollamaModelPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        ollamaModelPopup.isEnabled = false
 
         hoverCheck = NSButton(checkboxWithTitle: "modo arrastre ∿ (toque inicia, toque termina)",
                               target: self, action: #selector(hoverGlideChanged(_:)))
@@ -129,12 +139,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let grid = NSGridView(views: [
             [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
+            [makeLabel("Atajo escribir en borrador:"), focusShortcutField],
             [makeLabel("Idioma:"), languagePopup],
             [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
             [makeLabel("Área de borrador:"), composerCheck],
             [makeLabel("Glide sin clic:"), hoverCheck],
             [makeLabel("Completado IA (✦):"), enginePopup],
-            [makeLabel("Modelo de Ollama:"), ollamaModelField]
+            [makeLabel("Modelo de Ollama:"), ollamaModelPopup]
         ])
         grid.rowSpacing = 14
         grid.columnSpacing = 12
@@ -172,6 +183,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24)
         ])
+
+        if OllamaModelCatalog.isSelectorEnabled(for: Settings.completionEngine) {
+            reloadOllamaModels()
+        }
     }
 
     private func makeLabel(_ text: String) -> NSTextField {
@@ -191,16 +206,72 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func engineChanged() {
         let engines = ["system", "ollama", "off"]
         Settings.completionEngine = engines[enginePopup.indexOfSelectedItem]
-        ollamaModelField.isEnabled = Settings.completionEngine == "ollama"
+        if OllamaModelCatalog.isSelectorEnabled(for: Settings.completionEngine) {
+            reloadOllamaModels()
+        } else {
+            ollamaModelsTask?.cancel()
+            showSavedOllamaModel(enabled: false)
+        }
         onCompletionEngineChange?()
     }
 
     @objc private func ollamaModelChanged() {
-        let name = ollamaModelField.stringValue.trimmingCharacters(in: .whitespaces)
-        if !name.isEmpty {
-            Settings.ollamaModel = name
+        guard let name = ollamaModelPopup.selectedItem?.representedObject as? String else { return }
+        Settings.ollamaModel = name
+        onCompletionEngineChange?()
+    }
+
+    private func reloadOllamaModels() {
+        ollamaModelsTask?.cancel()
+        ollamaModelPopup.removeAllItems()
+        ollamaModelPopup.addItem(withTitle: "Cargando modelos…")
+        ollamaModelPopup.isEnabled = false
+        ollamaModelPopup.toolTip = nil
+
+        ollamaModelsTask = Task { [weak self] in
+            do {
+                let models = try await OllamaModelCatalog.fetch()
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self?.showOllamaModels(models) }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.ollamaModelPopup.removeAllItems()
+                    self?.ollamaModelPopup.addItem(withTitle: "Ollama no disponible")
+                    self?.ollamaModelPopup.isEnabled = false
+                    self?.ollamaModelPopup.toolTip = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func showOllamaModels(_ models: [String]) {
+        ollamaModelPopup.removeAllItems()
+        guard !models.isEmpty else {
+            ollamaModelPopup.addItem(withTitle: "Sin modelos instalados")
+            ollamaModelPopup.isEnabled = false
+            return
+        }
+
+        for model in models {
+            ollamaModelPopup.addItem(withTitle: model)
+            ollamaModelPopup.lastItem?.representedObject = model
+        }
+        let selectedModel = models.contains(Settings.ollamaModel) ? Settings.ollamaModel : models[0]
+        ollamaModelPopup.selectItem(withTitle: selectedModel)
+        ollamaModelPopup.isEnabled = true
+        if selectedModel != Settings.ollamaModel {
+            Settings.ollamaModel = selectedModel
             onCompletionEngineChange?()
         }
+    }
+
+    private func showSavedOllamaModel(enabled: Bool) {
+        ollamaModelPopup.removeAllItems()
+        ollamaModelPopup.addItem(withTitle: Settings.ollamaModel)
+        ollamaModelPopup.lastItem?.representedObject = Settings.ollamaModel
+        ollamaModelPopup.isEnabled = enabled
+        ollamaModelPopup.toolTip = nil
     }
 
     @objc private func composerModeChanged(_ sender: NSButton) {

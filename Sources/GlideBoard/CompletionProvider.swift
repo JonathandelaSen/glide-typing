@@ -51,14 +51,12 @@ final class QueryLog {
     }
 }
 
-/// A source of short phrase completions ("ghost text") and word suggestions.
+/// A source of short phrase completions ("ghost text").
 protocol CompletionProvider {
     /// `target` is a one-line description of where the text will land
     /// ("Slack — #dev"), read from the AX tree — it disambiguates tone and
     /// vocabulary in ways the sentence alone cannot.
     func complete(context: String, target: String?) async throws -> String?
-    /// Candidate full words for the partial word being typed at the end of `context`.
-    func suggestWords(context: String, partial: String) async throws -> [String]
 }
 
 enum CompletionCleaner {
@@ -121,43 +119,6 @@ enum CompletionCleaner {
         return prompt + "\nSentence: " + context
     }
 
-    static let wordInstructions = """
-    El usuario está escribiendo una palabra y te da su texto, que acaba en un \
-    fragmento de palabra. Responde ÚNICAMENTE con 4 palabras completas candidatas \
-    que probablemente esté escribiendo, separadas por comas, sin explicar nada. \
-    Deben empezar por el fragmento (puedes añadir tildes), o contener sus \
-    letras en orden si parece una abreviatura sin vocales. Incluye términos \
-    técnicos de programación si encajan con el contexto.
-
-    Ejemplos:
-    Texto: "quiero refac"
-    Fragmento: "refac"
-    Respuesta: refactorizar, refactoriza, refactorices, refactorización
-    Texto: "limpia el tcld"
-    Fragmento: "tcld"
-    Respuesta: teclado, teclados, teclado
-    """
-
-    /// Parse a comma/newline-separated word list, keeping only real extensions
-    /// of the typed fragment.
-    static func cleanWordList(_ raw: String, partial: String) -> [String] {
-        let normPartial = String(partial.lowercased().map(Lexicon.baseKey))
-        var seen = Set<String>()
-        var out: [String] = []
-        for piece in raw.split(whereSeparator: { $0 == "," || $0 == "\n" }) {
-            let word = piece.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”«» .;:"))
-            guard !word.isEmpty, !word.contains(" ") else { continue }
-            let norm = String(word.lowercased().map(Lexicon.baseKey))
-            // Accept prefix extensions and abbreviation expansions (subsequence).
-            guard norm.hasPrefix(normPartial) || Lexicon.isSubsequence(normPartial, of: norm),
-                  word.count > partial.count,
-                  !seen.contains(norm) else { continue }
-            seen.insert(norm)
-            out.append(word)
-            if out.count == 4 { break }
-        }
-        return out
-    }
 }
 
 // MARK: - Apple system model (macOS 26+, zero setup)
@@ -194,19 +155,6 @@ final class SystemModelProvider: CompletionProvider {
         return cleaned
     }
 
-    func suggestWords(context: String, partial: String) async throws -> [String] {
-        let session = LanguageModelSession(instructions: CompletionCleaner.wordInstructions)
-        let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 30)
-        let prompt = "Texto: \"\(context)\"\nFragmento: \"\(partial)\"\nRespuesta:"
-        let start = Date()
-        let response = try await session.respond(to: prompt, options: options)
-        let cleaned = CompletionCleaner.cleanWordList(response.content, partial: partial)
-        QueryLog.shared.record(kind: "palabra «\(partial)»", isPhrase: false, engine: "Apple",
-                               ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: context, raw: response.content,
-                               cleaned: cleaned.isEmpty ? "(nada)" : cleaned.joined(separator: ", "))
-        return cleaned
-    }
 }
 
 // MARK: - Ollama (local HTTP server, user-selectable model)
@@ -257,17 +205,4 @@ final class OllamaProvider: CompletionProvider {
         return cleaned
     }
 
-    func suggestWords(context: String, partial: String) async throws -> [String] {
-        let prompt = CompletionCleaner.wordInstructions
-            + "\n\nTexto: \"\(context)\"\nFragmento: \"\(partial)\"\nRespuesta:"
-        let start = Date()
-        guard let response = try await generate(prompt: prompt, maxTokens: 30, temperature: 0.2) else { return [] }
-        let cleaned = CompletionCleaner.cleanWordList(response, partial: partial)
-        QueryLog.shared.record(kind: "palabra «\(partial)»", isPhrase: false,
-                               engine: "Ollama (\(Settings.ollamaModel))",
-                               ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: context, raw: response,
-                               cleaned: cleaned.isEmpty ? "(nada)" : cleaned.joined(separator: ", "))
-        return cleaned
-    }
 }

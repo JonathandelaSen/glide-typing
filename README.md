@@ -16,6 +16,7 @@ Requires Xcode Command Line Tools (Swift). On first launch, macOS will request *
 ## Usage
 
 - Press **⌥⌘G** to show or hide the floating keyboard. You can also use the ⌨︎ menu bar icon.
+- Press **⇧⌥⌘G** to show GlideBoard and move keyboard focus to the end of its composer. Type with the physical keyboard, then use **↪** or **⏎** to return the text to the app you came from. Both shortcuts can be changed in Settings.
 - The keyboard **does not steal focus**: text is sent to the app where you are currently typing, such as Notes, Safari, or Slack.
 - **Glide** across the letters of a word without releasing the button, then release when finished. The best prediction is inserted, with automatic spacing between words. While gliding, the top bar displays the word being formed in real time.
 - **Composer mode** (default): text is composed in a text area at the top of the panel — with the AI continuation shaded inline — and inserted into the focused app with the **↪** chip, or inserted + sent with **⏎**. This gives the model perfect context in any app. Disable it in Settings to type directly into the app. Typed fragments also work as **abbreviations**: "tcld" suggests "teclado", "kybrd" suggests "keyboard".
@@ -26,7 +27,7 @@ Requires Xcode Command Line Tools (Swift). On first launch, macOS will request *
 - Pressing **⌫** immediately after a glide deletes the entire word. Subsequent presses delete one character at a time.
 - Decoding and autocompletion are **bilingual**: Spanish (~30,000 words) and English (~10,000 words) work simultaneously without switching. The **ES/EN** button only changes the layout (`ñ` key). Words you type letter-by-letter that the dictionary doesn't know are **learned automatically** (stored in `~/Library/Application Support/GlideBoard/user_words.txt`) and become glidable and completable.
 - **Two-finger swipes** over the keyboard (trackpad): ← delete, → space, ↑ accept AI phrase, ↓ period. A symbol flashes over the keys to confirm each gesture. **Right-click** (two-finger click) opens a menu with the editing actions: paste, select all + copy, delete to end, delete everything. The "?" button in the handle shows a visual legend.
-- Open **Settings…** from the ⌨︎ menu bar menu to change the show/hide shortcut, default language, and keyboard size (70–160%). Preferences are saved automatically.
+- Open **Settings…** from the ⌨︎ menu bar menu to change the show/hide and composer-focus shortcuts, default language, and keyboard size (70–160%). Preferences are saved automatically.
 - Drag the top handle to move the keyboard. Click **✕** to hide it.
 
 ## How It Works
