@@ -9,8 +9,9 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardView(_ view: KeyboardView, didPickGhost text: String)
     /// A glide ended on top of a candidate in the suggestion row.
     func keyboardView(_ view: KeyboardView, didGlideSelect index: Int)
-    /// A two-finger swipe shortcut over the keyboard.
-    func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection)
+    /// A two-finger swipe shortcut over the keyboard. `long` distinguishes a
+    /// long flick (accept the whole ghost) from a short one (first word only).
+    func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection, long: Bool)
     /// An editing action chosen from the right-click menu.
     func keyboardView(_ view: KeyboardView, didEdit action: EditAction)
     /// The user toggled between tap mode and drag (no-click glide) mode.
@@ -910,7 +911,11 @@ final class KeyboardView: NSView {
     }
 
     func classifySwipe(_ v: CGVector) {
-        guard hypot(v.dx, v.dy) > 24 else { return }
+        let magnitude = hypot(v.dx, v.dy)
+        guard magnitude > 24 else { return }
+        // Short vs long flick: a long upward flick accepts the whole ghost,
+        // a short one just its first word (partial acceptance).
+        let long = magnitude > 90
         // Vertical axis empirically calibrated: scroll deltas report the
         // opposite sign of the finger motion on this setup.
         let fingerY = -v.dy
@@ -939,7 +944,7 @@ final class KeyboardView: NSView {
                 endTapTrace(typeLetterIfShort: false)
             }
         }
-        delegate?.keyboardView(self, didFlick: direction)
+        delegate?.keyboardView(self, didFlick: direction, long: long)
     }
 
     private func resetTraceState() {
