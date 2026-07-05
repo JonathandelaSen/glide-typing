@@ -29,6 +29,17 @@ enum Settings {
         set { defaults.set(NSNumber(value: newValue), forKey: "focusHotKeyModifiers") }
     }
 
+    /// Hotkey to transform the selection of the focused app (Plan A).
+    static var transformHotKeyCode: UInt32 {
+        get { (defaults.object(forKey: "transformHotKeyCode") as? NSNumber)?.uint32Value ?? UInt32(kVK_ANSI_T) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "transformHotKeyCode") }
+    }
+
+    static var transformHotKeyModifiers: UInt32 {
+        get { (defaults.object(forKey: "transformHotKeyModifiers") as? NSNumber)?.uint32Value ?? UInt32(cmdKey | optionKey) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "transformHotKeyModifiers") }
+    }
+
     static var language: Language {
         get { Language(rawValue: defaults.string(forKey: "language") ?? "") ?? .spanish }
         set { defaults.set(newValue.rawValue, forKey: "language") }

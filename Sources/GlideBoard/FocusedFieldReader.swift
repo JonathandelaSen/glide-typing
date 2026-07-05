@@ -180,6 +180,72 @@ enum FocusedFieldReader {
         return slice.isEmpty ? nil : slice
     }
 
+    // MARK: - Selection (transform-anywhere)
+
+    /// Focused UI element of `app` (or the system-wide one), with the same
+    /// secure-field veto as `textBeforeCursor`. Shared by the selection accessors.
+    private static func focusedElement(in app: NSRunningApplication?) -> AXUIElement? {
+        enableElectronAccessibilityIfNeeded(in: app)
+        let owner: AXUIElement
+        if let app, !app.isTerminated {
+            owner = AXUIElementCreateApplication(app.processIdentifier)
+        } else {
+            owner = AXUIElementCreateSystemWide()
+        }
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(owner, kAXFocusedUIElementAttribute as CFString,
+                                            &focusedRef) == .success,
+              let focusedRef else { return nil }
+        let element = focusedRef as! AXUIElement
+        var subroleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString,
+                                         &subroleRef) == .success,
+           let subrole = subroleRef as? String,
+           subrole == (kAXSecureTextFieldSubrole as String) {
+            return nil
+        }
+        return element
+    }
+
+    /// What a transformation operates on, which decides how to write back.
+    enum SelectionScope {
+        case selection   // replace via AXSelectedText
+        case wholeField  // empty selection: the whole field, via AXValue
+    }
+
+    /// The selected text in the focused element — or, when nothing is
+    /// selected, the whole field content. Nil when AX exposes neither.
+    static func transformableText(in app: NSRunningApplication?) -> (text: String, scope: SelectionScope)? {
+        guard let element = focusedElement(in: app) else { return nil }
+        var selectedRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString,
+                                         &selectedRef) == .success,
+           let selected = selectedRef as? String, !selected.isEmpty {
+            return (selected, .selection)
+        }
+        var valueRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString,
+                                         &valueRef) == .success,
+           let value = valueRef as? String,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return (value, .wholeField)
+        }
+        return nil
+    }
+
+    /// Write the transformed text back via AX. Returns false when the app
+    /// doesn't allow it (the caller falls back to paste-over-selection).
+    static func replaceTransformableText(_ text: String, scope: SelectionScope,
+                                         in app: NSRunningApplication?) -> Bool {
+        guard let element = focusedElement(in: app) else { return false }
+        let attribute = (scope == .selection ? kAXSelectedTextAttribute
+                                             : kAXValueAttribute) as CFString
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute, &settable) == .success,
+              settable.boolValue else { return false }
+        return AXUIElementSetAttributeValue(element, attribute, text as CFString) == .success
+    }
+
     /// Fallback for fields without AXValue (Chromium/Electron web content):
     /// ask for the string in the range [caret - maxLength, caret].
     private static func stringBeforeCaretViaRange(_ element: AXUIElement, maxLength: Int) -> String? {

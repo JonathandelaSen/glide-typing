@@ -7,6 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
     private var focusHotKey: HotKey?
+    private var transformHotKey: HotKey?
+    /// Plan A: transform the selection of the focused app in place.
+    private var transformer: TextTransformer?
     /// Claims the physical Tab key while a ghost is on screen, so the phrase
     /// suggestion can be accepted word by word without touching the mouse.
     private var tabInterceptor: KeyInterceptor?
@@ -34,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
     private var toggleMenuItem: NSMenuItem?
     private var focusMenuItem: NSMenuItem?
+    private var transformMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
     private var targetPollTimer: Timer?
@@ -107,8 +111,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
         QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
 
+        transformer = TextTransformer(
+            provider: { [weak self] in self?.completionProvider },
+            targetApp: { [weak self] in self?.lastExternalApp },
+            notify: { [weak self] message in
+                guard let self else { return }
+                if self.panel.isVisible {
+                    self.keyboardView.flash(message)
+                } else {
+                    NSSound.beep()
+                }
+                NSLog("GlideBoard transform: %@", message)
+            })
+
         applyHotKey()
         applyFocusHotKey()
+        applyTransformHotKey()
         applyCompletionEngine()
         showPanel()
         startTargetPolling()
@@ -162,6 +180,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
     }
 
+    private func applyTransformHotKey() {
+        transformHotKey = nil
+        transformHotKey = HotKey(id: 3,
+                                 keyCode: Settings.transformHotKeyCode,
+                                 modifiers: Settings.transformHotKeyModifiers) { [weak self] in
+            self?.transformer?.begin()
+        }
+        transformMenuItem?.title = "Transformar texto enfocado (\(shortcutDescription(keyCode: Settings.transformHotKeyCode, modifiers: Settings.transformHotKeyModifiers)))"
+        if transformHotKey == nil {
+            NSLog("GlideBoard: could not register transform hotkey — it may be taken by another app")
+        }
+    }
+
     // MARK: - Panel
 
     private func buildPanel() {
@@ -204,6 +235,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     }
 
     private func focusComposerInput() {
+        if panel.isKeyWindow {
+            releaseComposerFocus(panel: panel) { [weak self] in
+                self?.lastExternalApp?.activate()
+            }
+            // Showing a non-activating panel after the target regains key
+            // status keeps GlideBoard visible without stealing focus back.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                self?.showPanel()
+            }
+            return
+        }
         guard composerEnabled else {
             showPanel()
             keyboardView.flash("Activa el área de borrador")
@@ -628,6 +670,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         focus.target = self
         menu.addItem(focus)
         focusMenuItem = focus
+        let transform = NSMenuItem(title: "Transformar texto enfocado (\(shortcutDescription(keyCode: Settings.transformHotKeyCode, modifiers: Settings.transformHotKeyModifiers)))",
+                                   action: #selector(menuTransform), keyEquivalent: "")
+        transform.target = self
+        menu.addItem(transform)
+        transformMenuItem = transform
         menu.addItem(.separator())
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
@@ -655,6 +702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     @objc private func menuToggle() { togglePanel() }
     @objc private func menuFocusComposer() { focusComposerInput() }
+    @objc private func menuTransform() { transformer?.begin() }
     @objc private func setSpanish() { switchLanguage(.spanish) }
     @objc private func setEnglish() { switchLanguage(.english) }
 

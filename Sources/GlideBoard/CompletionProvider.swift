@@ -51,12 +51,14 @@ final class QueryLog {
     }
 }
 
-/// A source of short phrase completions ("ghost text").
+/// A source of short phrase completions ("ghost text") and text transformations.
 protocol CompletionProvider {
     /// `target` is a one-line description of where the text will land
     /// ("Slack — #dev"), read from the AX tree — it disambiguates tone and
     /// vocabulary in ways the sentence alone cannot.
     func complete(context: String, target: String?) async throws -> String?
+    /// Apply `action` to `text`, returning only the transformed text.
+    func transform(action: TransformAction, text: String) async throws -> String?
 }
 
 enum CompletionCleaner {
@@ -155,6 +157,19 @@ final class SystemModelProvider: CompletionProvider {
         return cleaned
     }
 
+    func transform(action: TransformAction, text: String) async throws -> String? {
+        let session = LanguageModelSession(instructions: action.instructions)
+        let options = GenerationOptions(temperature: 0.2,
+                                        maximumResponseTokens: action.maxTokens(for: text))
+        let start = Date()
+        let response = try await session.respond(to: "Texto:\n\(text)", options: options)
+        let cleaned = TransformCleaner.clean(response.content)
+        QueryLog.shared.record(kind: "🔧 \(action.title)", isPhrase: false, engine: "Apple",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: text, raw: response.content,
+                               cleaned: cleaned ?? "(nada)")
+        return cleaned
+    }
 }
 
 // MARK: - Ollama (local HTTP server, user-selectable model)
@@ -205,4 +220,18 @@ final class OllamaProvider: CompletionProvider {
         return cleaned
     }
 
+    func transform(action: TransformAction, text: String) async throws -> String? {
+        let start = Date()
+        // No "\n" stop token here: transformed text is often multi-line.
+        guard let response = try await generate(prompt: action.prompt(for: text),
+                                                maxTokens: action.maxTokens(for: text),
+                                                temperature: 0.2) else { return nil }
+        let cleaned = TransformCleaner.clean(response)
+        QueryLog.shared.record(kind: "🔧 \(action.title)", isPhrase: false,
+                               engine: "Ollama (\(Settings.ollamaModel))",
+                               ms: Int(-start.timeIntervalSinceNow * 1000),
+                               context: text, raw: response,
+                               cleaned: cleaned ?? "(nada)")
+        return cleaned
+    }
 }

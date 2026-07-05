@@ -16,7 +16,7 @@ Requires Xcode Command Line Tools (Swift). On first launch, macOS will request *
 ## Usage
 
 - Press **⌥⌘G** to show or hide the floating keyboard. You can also use the ⌨︎ menu bar icon.
-- Press **⇧⌥⌘G** to show GlideBoard and move keyboard focus to the end of its composer. Type with the physical keyboard, then use **↪** or **⏎** to return the text to the app you came from. Both shortcuts can be changed in Settings.
+- Press **⇧⌥⌘G** to show GlideBoard and move keyboard focus to the end of its composer; press it again to return focus to the app you came from. Type with the physical keyboard, then use **↪** or **⏎** when you want to send the draft. Both shortcuts can be changed in Settings.
 - The keyboard **does not steal focus**: text is sent to the app where you are currently typing, such as Notes, Safari, or Slack.
 - **Glide** across the letters of a word without releasing the button, then release when finished. The best prediction is inserted, with automatic spacing between words. While gliding, the top bar displays the word being formed in real time.
 - **Composer mode** (default): text is composed in a text area at the top of the panel — with the AI continuation shaded inline — and inserted into the focused app with the **↪** chip, or inserted + sent with **⏎**. This gives the model perfect context in any app. Disable it in Settings to type directly into the app. Typed fragments also work as **abbreviations**: "tcld" suggests "teclado", "kybrd" suggests "keyboard".

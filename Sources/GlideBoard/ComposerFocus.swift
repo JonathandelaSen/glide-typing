@@ -15,3 +15,11 @@ func focusComposer(panel: NSPanel, composer: NSTextView) {
     composer.setSelectedRange(NSRange(location: end, length: 0))
     composer.scrollRangeToVisible(composer.selectedRange())
 }
+
+/// Temporarily hides the panel so macOS can hand key status back to the
+/// previously active app. The caller can show it again once focus has moved.
+func releaseComposerFocus(panel: NSPanel, returnToTarget: () -> Void) {
+    panel.makeFirstResponder(nil)
+    panel.orderOut(nil)
+    returnToTarget()
+}

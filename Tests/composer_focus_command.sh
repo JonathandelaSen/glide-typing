@@ -31,6 +31,14 @@ precondition(
     composer.selectedRange() == NSRange(location: composer.string.utf16.count, length: 0),
     "The caret did not move to the end of the existing draft"
 )
+
+var returnedToTarget = false
+releaseComposerFocus(panel: panel) {
+    returnedToTarget = true
+}
+
+precondition(returnedToTarget, "The focus command did not return control to the target app")
+precondition(!panel.isVisible, "The panel must release key focus before it is shown again")
 SWIFT
 
 swiftc \
