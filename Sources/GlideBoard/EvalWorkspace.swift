@@ -104,11 +104,15 @@ final class EvalExporter {
         }
     }
 
-    /// The user accepted the ghost: tag its capture, so the case records that
-    /// its "ground truth" is model output the user endorsed — not spontaneous
-    /// typing — and can be filtered out when that distinction matters.
+    /// The user accepted the ghost (fully, or one word at a time): tag its
+    /// capture, so the case records that its "ground truth" is model output
+    /// the user endorsed — not spontaneous typing — and can be filtered out
+    /// when that distinction matters. After partial acceptance the on-screen
+    /// ghost is a suffix of the original suggestion, hence the suffix match.
     func ghostAccepted(_ text: String) {
-        if let i = pending.lastIndex(where: { $0.query?.cleaned == text }) {
+        if let i = pending.lastIndex(where: {
+            $0.query?.cleaned == text || $0.query?.cleaned.hasSuffix(text) == true
+        }) {
             pending[i].accepted = true
         }
     }
@@ -161,8 +165,6 @@ final class EvalExporter {
     private func writeCase(context: String, continuation: String,
                            source: String, accepted: Bool) -> String {
         let caseId = UUID().uuidString.lowercased()
-        let prompt = CompletionCleaner.instructions
-            + "\n\nTexto hasta el cursor:\n\(context)\n\nContinuación:"
         writeJSON([
             "schemaVersion": "1",
             "caseId": caseId,
@@ -174,11 +176,12 @@ final class EvalExporter {
             "input": ["context": context],
             "promptTemplate": [
                 "format": "text",
-                "templateId": "glideboard.phrase-completion.v1",
-                "text": CompletionCleaner.instructions + "\n\nTexto hasta el cursor:\n{{context}}\n\nContinuación:"
+                "templateId": "glideboard.phrase-completion.v2",
+                "text": CompletionCleaner.phrasePrompt(context: "{{context}}")
             ],
             "promptVariables": ["context": context],
-            "renderedPrompt": ["format": "text", "text": prompt],
+            "renderedPrompt": ["format": "text",
+                               "text": CompletionCleaner.phrasePrompt(context: context)],
             "expectedOutput": ["kind": "continuation", "text": ""],
             // Facts, not expectations: what the user actually typed after the
             // context in this session. Manually copy into expectedOutput if
@@ -230,8 +233,6 @@ final class EvalExporter {
         updateRun(id: runId, dir: runDir, provider: provider, model: model,
                   engine: query.engine, day: day, caseId: caseId)
 
-        let prompt = CompletionCleaner.instructions
-            + "\n\nTexto hasta el cursor:\n\(query.context)\n\nContinuación:"
         writeJSON([
             "schemaVersion": "1",
             "resultId": "\(runId).\(caseId)",
@@ -241,7 +242,8 @@ final class EvalExporter {
             "createdAt": Self.iso.string(from: query.date),
             "runtime": ["provider": provider, "model": model, "temperature": 0.15],
             "promptVariables": ["context": query.context],
-            "renderedPrompt": ["format": "text", "text": prompt],
+            "renderedPrompt": ["format": "text",
+                               "text": CompletionCleaner.phrasePrompt(context: query.context)],
             "rawOutput": query.raw,
             "parsedOutput": query.isEmpty ? NSNull() : query.cleaned,
             "status": "completed",

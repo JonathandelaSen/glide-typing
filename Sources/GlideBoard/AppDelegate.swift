@@ -859,7 +859,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         commitWord(picked)
     }
 
-    func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection) {
+    func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection, long: Bool) {
         switch direction {
         case .right:
             view.flash(".")
@@ -873,9 +873,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         case .up:
             // Phrase continuation is the highest-value shortcut when the user
             // is between words; mid-word, complete that word first.
+            // Partial acceptance: a short flick takes just the ghost's first
+            // word (an 80%-right suggestion is no longer worth zero); a long
+            // flick takes the whole phrase.
             if tapBuffer.isEmpty, let ghost = view.ghost {
                 view.flash("✦")
-                keyboardView(view, didPickGhost: ghost)
+                if long {
+                    keyboardView(view, didPickGhost: ghost)
+                } else {
+                    acceptGhostFirstWord(view, ghost: ghost)
+                }
             } else if !view.candidates.isEmpty {
                 view.flash("✓")
                 keyboardView(view, didPickCandidate: 0)
@@ -1018,6 +1025,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             view.predictions = []
             view.ghost = nil
         }
+    }
+
+    /// Partial acceptance: insert only the ghost's first word and keep the
+    /// rest on screen, so the remaining words can be taken one flick at a
+    /// time (instantly, no new model round-trip) or typed over.
+    private func acceptGhostFirstWord(_ view: KeyboardView, ghost: String) {
+        let words = ghost.split(separator: " ").map(String.init)
+        guard let first = words.first else { return }
+        let rest = words.dropFirst().joined(separator: " ")
+        guard !rest.isEmpty else {
+            keyboardView(view, didPickGhost: ghost) // single word: same thing
+            return
+        }
+        QueryLog.shared.recordPhraseAccepted()
+        evalExporter?.ghostAccepted(ghost)
+        let needsSpace = lastOutputEndsInWordChar && tapBuffer.isEmpty
+        tapBuffer = ""
+        emitText((needsSpace ? " " : "") + first)
+        // Backspace right after accepting removes that word.
+        lastInsertedWord = first
+        lastInsertedHadLeadingSpace = needsSpace
+        lastOutputEndsInWordChar = true
+        bigrams[language.rawValue]?.learn(previous: contextWord, word: first.lowercased())
+        contextWord = first.lowercased()
+        view.candidates = []
+        view.ghost = rest
     }
 
     func keyboardView(_ view: KeyboardView, didPickGhost text: String) {

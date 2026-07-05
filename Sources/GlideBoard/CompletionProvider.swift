@@ -89,33 +89,27 @@ enum CompletionCleaner {
                 break
             }
         }
-        words = Array(words.prefix(12))
+        words = Array(words.prefix(3))
         let out = words.joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return out.isEmpty ? nil : out
     }
 
+    /// Short-bet prompt (validated in Eval Studio): ask for 1–3 words, not a
+    /// phrase — first-word accuracy is what makes suggestions acceptable, and
+    /// partial acceptance turns the extra words into compound value.
     static let instructions = """
-    Eres un autocompletado de escritura, no un asistente que responde al usuario. \
-    Continúa el texto como si fueras su autor. Devuelve ÚNICAMENTE la continuación \
-    más probable y útil, en el mismo idioma, tono y persona gramatical.
-
-    Prioriza completar la intención concreta ya visible: una petición, explicación, \
-    lista, mensaje o fragmento de código. Prefiere detalles específicos sugeridos \
-    por el contexto frente a frases genéricas. Escribe entre 2 y 10 palabras; puedes \
-    terminar antes si completas claramente la idea. No repitas el texto, no lo \
-    contestes, no añadas comillas, etiquetas ni explicaciones.
-
-    Ejemplos:
-    Texto: "quiero que revises el código y"
-    Respuesta: me digas si hay errores
-    Texto: "create a new branch and"
-    Respuesta: push the changes to it
-    Texto: "El problema principal de esta propuesta es"
-    Respuesta: que no define cómo mediremos el impacto
-    Texto: "Podemos quedar mañana a las"
-    Respuesta: diez y revisar juntos los cambios
+    Continue the sentence with the next 1 to 3 words, only those. \
+    Prefer fewer, surer words; never try to finish the whole sentence. \
+    Answer in the sentence's language and tone, with no quotes and no explanations.
     """
+
+    /// The exact plain-text prompt sent for a phrase completion. Also the
+    /// shape exported to the eval workspace — keep both in sync by using
+    /// only this function to build it.
+    static func phrasePrompt(context: String) -> String {
+        instructions + "\nSentence: " + context
+    }
 
     static let wordInstructions = """
     El usuario está escribiendo una palabra y te da su texto, que acaba en un \
@@ -176,8 +170,8 @@ final class SystemModelProvider: CompletionProvider {
 
     func complete(context: String) async throws -> String? {
         let session = LanguageModelSession(instructions: CompletionCleaner.instructions)
-        let options = GenerationOptions(temperature: 0.15, maximumResponseTokens: 24)
-        let prompt = "Texto hasta el cursor:\n\(context)\n\nContinuación:"
+        let options = GenerationOptions(temperature: 0.15, maximumResponseTokens: 12)
+        let prompt = "Sentence: \(context)"
         let start = Date()
         let response = try await session.respond(to: prompt, options: options)
         let cleaned = CompletionCleaner.clean(response.content, context: context)
@@ -206,11 +200,18 @@ final class SystemModelProvider: CompletionProvider {
 // MARK: - Ollama (local HTTP server, user-selectable model)
 
 final class OllamaProvider: CompletionProvider {
-    private func generate(prompt: String, maxTokens: Int, temperature: Double) async throws -> String? {
+    private func generate(prompt: String, maxTokens: Int, temperature: Double,
+                          stop: [String] = []) async throws -> String? {
         guard let url = URL(string: "http://localhost:11434/api/generate") else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 20
+        var options: [String: Any] = [
+            "num_predict": maxTokens,
+            "temperature": temperature,
+            "num_ctx": 2048
+        ]
+        if !stop.isEmpty { options["stop"] = stop }
         let body: [String: Any] = [
             "model": Settings.ollamaModel,
             "prompt": prompt,
@@ -221,11 +222,7 @@ final class OllamaProvider: CompletionProvider {
             // couple thousand tokens, and the default 16K+ just bloats the KV
             // cache and slows attention.
             "keep_alive": "30m",
-            "options": [
-                "num_predict": maxTokens,
-                "temperature": temperature,
-                "num_ctx": 2048
-            ]
+            "options": options
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await URLSession.shared.data(for: request)
@@ -235,10 +232,10 @@ final class OllamaProvider: CompletionProvider {
     }
 
     func complete(context: String) async throws -> String? {
-        let prompt = CompletionCleaner.instructions
-            + "\n\nTexto hasta el cursor:\n\(context)\n\nContinuación:"
+        let prompt = CompletionCleaner.phrasePrompt(context: context)
         let start = Date()
-        guard let response = try await generate(prompt: prompt, maxTokens: 24, temperature: 0.15) else { return nil }
+        guard let response = try await generate(prompt: prompt, maxTokens: 12,
+                                                temperature: 0.15, stop: ["\n"]) else { return nil }
         let cleaned = CompletionCleaner.clean(response, context: context)
         QueryLog.shared.record(kind: "✦ frase", isPhrase: true,
                                engine: "Ollama (\(Settings.ollamaModel))",
