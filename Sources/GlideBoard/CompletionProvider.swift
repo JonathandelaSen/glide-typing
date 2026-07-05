@@ -89,20 +89,15 @@ enum CompletionCleaner {
                 break
             }
         }
-        words = Array(words.prefix(3))
+        words = Array(words.prefix(1))
         let out = words.joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return out.isEmpty ? nil : out
     }
 
-    /// Short-bet prompt (validated in Eval Studio): ask for 1–3 words, not a
-    /// phrase — first-word accuracy is what makes suggestions acceptable, and
-    /// partial acceptance turns the extra words into compound value.
-    static let instructions = """
-    Continue the sentence with the next 1 to 3 words, only those. \
-    Prefer fewer, surer words; never try to finish the whole sentence. \
-    Answer in the sentence's language and tone, with no quotes and no explanations.
-    """
+    /// Short-bet prompt, validated verbatim in the user's eval platform:
+    /// a single next word maximizes acceptability.
+    static let instructions = "Continue the sentence with the next word, only one."
 
     /// The exact plain-text prompt sent for a phrase completion. Also the
     /// shape exported to the eval workspace — keep both in sync by using
@@ -170,7 +165,7 @@ final class SystemModelProvider: CompletionProvider {
 
     func complete(context: String) async throws -> String? {
         let session = LanguageModelSession(instructions: CompletionCleaner.instructions)
-        let options = GenerationOptions(temperature: 0.15, maximumResponseTokens: 12)
+        let options = GenerationOptions(temperature: 0.15, maximumResponseTokens: 8)
         let prompt = "Sentence: \(context)"
         let start = Date()
         let response = try await session.respond(to: prompt, options: options)
@@ -234,7 +229,7 @@ final class OllamaProvider: CompletionProvider {
     func complete(context: String) async throws -> String? {
         let prompt = CompletionCleaner.phrasePrompt(context: context)
         let start = Date()
-        guard let response = try await generate(prompt: prompt, maxTokens: 12,
+        guard let response = try await generate(prompt: prompt, maxTokens: 8,
                                                 temperature: 0.15, stop: ["\n"]) else { return nil }
         let cleaned = CompletionCleaner.clean(response, context: context)
         QueryLog.shared.record(kind: "✦ frase", isPhrase: true,

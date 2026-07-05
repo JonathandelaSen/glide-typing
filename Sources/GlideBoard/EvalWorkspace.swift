@@ -176,7 +176,7 @@ final class EvalExporter {
             "input": ["context": context],
             "promptTemplate": [
                 "format": "text",
-                "templateId": "glideboard.phrase-completion.v2",
+                "templateId": "glideboard.phrase-completion.v3",
                 "text": CompletionCleaner.phrasePrompt(context: "{{context}}")
             ],
             "promptVariables": ["context": context],
