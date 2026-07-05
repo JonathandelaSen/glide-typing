@@ -90,6 +90,51 @@ enum FocusedFieldReader {
         return pid
     }
 
+    /// One-line description of where the text will land, built from facts the
+    /// AX tree exposes: app name, focused window title, and the focused
+    /// field's label or placeholder. Window titles carry the payload — mail
+    /// subject, chat channel, document name — which disambiguates tone and
+    /// vocabulary for the completion model. Nil when nothing useful is found.
+    static func targetDescription(in app: NSRunningApplication?) -> String? {
+        guard let app, !app.isTerminated else { return nil }
+        enableElectronAccessibilityIfNeeded(in: app)
+        var parts: [String] = []
+        if let name = app.localizedName, !name.isEmpty { parts.append(name) }
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var windowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString,
+                                         &windowRef) == .success,
+           let windowRef {
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(windowRef as! AXUIElement,
+                                             kAXTitleAttribute as CFString, &titleRef) == .success,
+               let title = titleRef as? String, !title.isEmpty {
+                parts.append(title)
+            }
+        }
+
+        // The field's own label or placeholder ("To:", "Message #dev"…),
+        // when the app names it and it adds something new.
+        var focusedRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString,
+                                         &focusedRef) == .success,
+           let focusedRef {
+            let element = focusedRef as! AXUIElement
+            for attr in ["AXTitle", "AXPlaceholderValue", "AXDescription"] {
+                var ref: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, attr as CFString, &ref) == .success,
+                   let label = ref as? String, !label.isEmpty, !parts.contains(label) {
+                    parts.append(label)
+                    break
+                }
+            }
+        }
+
+        let summary = parts.joined(separator: " — ")
+        return summary.isEmpty ? nil : String(summary.prefix(120))
+    }
+
     /// Text before the caret in the focused UI element, or nil if the app
     /// doesn't expose it (then the caller falls back to its own transcript).
     static func textBeforeCursor(maxLength: Int = 450) -> String? {

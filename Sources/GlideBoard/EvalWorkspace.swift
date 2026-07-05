@@ -23,6 +23,8 @@ final class EvalExporter {
 
     private struct Pending {
         let context: String
+        /// Where the text was being written (AX app/window/field), if known.
+        let target: String?
         let date: Date
         /// The engine's answer, when the request survived long enough to get one.
         var query: ModelQuery?
@@ -84,10 +86,10 @@ final class EvalExporter {
     /// Remember a phrase-completion request the moment it is made. Most
     /// requests are cancelled by the next word before the engine answers —
     /// the context is still a valid case once the ground truth is known.
-    func captureContext(_ context: String) {
+    func captureContext(_ context: String, target: String? = nil) {
         guard Settings.evalCaptureEnabled else { return }
         guard pending.last?.context != context else { return }
-        pending.append(Pending(context: context, date: Date(), query: nil))
+        pending.append(Pending(context: context, target: target, date: Date(), query: nil))
         // Expire captures the user abandoned (composer cleared, panel closed…).
         let cutoff = Date().addingTimeInterval(-2 * 3600)
         pending = pending.suffix(300).filter { $0.date > cutoff }
@@ -100,7 +102,8 @@ final class EvalExporter {
         if let i = pending.lastIndex(where: { $0.context == query.context && $0.query == nil }) {
             pending[i].query = query
         } else {
-            pending.append(Pending(context: query.context, date: query.date, query: query))
+            pending.append(Pending(context: query.context, target: query.target,
+                                   date: query.date, query: query))
         }
     }
 
@@ -128,6 +131,7 @@ final class EvalExporter {
                   let continuation = Self.continuation(after: item.context, in: sentText)
             else { continue }
             let caseId = writeCase(context: item.context,
+                                   target: item.target,
                                    continuation: continuation,
                                    source: "live",
                                    accepted: item.accepted)
@@ -162,7 +166,7 @@ final class EvalExporter {
     /// two identical-looking tests are still two different user intentions.
     /// Only observed facts are recorded; `name` and `expectedOutput` are
     /// emitted empty, to be filled in manually.
-    private func writeCase(context: String, continuation: String,
+    private func writeCase(context: String, target: String?, continuation: String,
                            source: String, accepted: Bool) -> String {
         let caseId = UUID().uuidString.lowercased()
         writeJSON([
@@ -173,15 +177,17 @@ final class EvalExporter {
             "createdAt": Self.iso.string(from: Date()),
             "createdBy": ["source": "glideboard", "capture": source,
                           "ghostAccepted": accepted] as [String: Any],
-            "input": ["context": context],
+            "input": ["context": context, "target": target ?? ""] as [String: Any],
             "promptTemplate": [
                 "format": "text",
-                "templateId": "glideboard.phrase-completion.v3",
-                "text": CompletionCleaner.phrasePrompt(context: "{{context}}")
+                "templateId": "glideboard.phrase-completion.v4",
+                "text": CompletionCleaner.phrasePrompt(context: "{{context}}",
+                                                       target: target == nil ? nil : "{{target}}")
             ],
-            "promptVariables": ["context": context],
+            "promptVariables": ["context": context, "target": target ?? ""] as [String: Any],
             "renderedPrompt": ["format": "text",
-                               "text": CompletionCleaner.phrasePrompt(context: context)],
+                               "text": CompletionCleaner.phrasePrompt(context: context,
+                                                                      target: target)],
             "expectedOutput": ["kind": "continuation", "text": ""],
             // Facts, not expectations: what the user actually typed after the
             // context in this session. Manually copy into expectedOutput if
@@ -241,9 +247,10 @@ final class EvalExporter {
             "producer": "eval-studio",
             "createdAt": Self.iso.string(from: query.date),
             "runtime": ["provider": provider, "model": model, "temperature": 0.15],
-            "promptVariables": ["context": query.context],
+            "promptVariables": ["context": query.context, "target": query.target ?? ""] as [String: Any],
             "renderedPrompt": ["format": "text",
-                               "text": CompletionCleaner.phrasePrompt(context: query.context)],
+                               "text": CompletionCleaner.phrasePrompt(context: query.context,
+                                                                      target: query.target)],
             "rawOutput": query.raw,
             "parsedOutput": query.isEmpty ? NSNull() : query.cleaned,
             "status": "completed",

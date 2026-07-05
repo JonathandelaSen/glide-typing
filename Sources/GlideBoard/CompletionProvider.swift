@@ -11,6 +11,8 @@ struct ModelQuery {
     let ms: Int
     let source: String
     let context: String
+    /// Where the text will land ("Mail — Re: informe"), from the AX tree.
+    let target: String?
     let raw: String
     let cleaned: String
     let date = Date()
@@ -28,9 +30,9 @@ final class QueryLog {
     var evalSink: ((ModelQuery) -> Void)?
 
     func record(kind: String, isPhrase: Bool, engine: String, ms: Int,
-                context: String, raw: String, cleaned: String) {
+                context: String, target: String? = nil, raw: String, cleaned: String) {
         let query = ModelQuery(kind: kind, isPhrase: isPhrase, engine: engine, ms: ms,
-                               source: currentSource, context: context,
+                               source: currentSource, context: context, target: target,
                                raw: raw.trimmingCharacters(in: .whitespacesAndNewlines),
                                cleaned: cleaned)
         DispatchQueue.main.async {
@@ -46,7 +48,10 @@ final class QueryLog {
 
 /// A source of short phrase completions ("ghost text") and word suggestions.
 protocol CompletionProvider {
-    func complete(context: String) async throws -> String?
+    /// `target` is a one-line description of where the text will land
+    /// ("Slack — #dev"), read from the AX tree — it disambiguates tone and
+    /// vocabulary in ways the sentence alone cannot.
+    func complete(context: String, target: String?) async throws -> String?
     /// Candidate full words for the partial word being typed at the end of `context`.
     func suggestWords(context: String, partial: String) async throws -> [String]
 }
@@ -101,9 +106,14 @@ enum CompletionCleaner {
 
     /// The exact plain-text prompt sent for a phrase completion. Also the
     /// shape exported to the eval workspace — keep both in sync by using
-    /// only this function to build it.
-    static func phrasePrompt(context: String) -> String {
-        instructions + "\nSentence: " + context
+    /// only this function to build it. The optional target line tells the
+    /// model where the text is being written (app, window, field).
+    static func phrasePrompt(context: String, target: String? = nil) -> String {
+        var prompt = instructions
+        if let target, !target.isEmpty {
+            prompt += "\nWriting in: " + target
+        }
+        return prompt + "\nSentence: " + context
     }
 
     static let wordInstructions = """
@@ -163,16 +173,18 @@ final class SystemModelProvider: CompletionProvider {
         warmup.prewarm()
     }
 
-    func complete(context: String) async throws -> String? {
+    func complete(context: String, target: String?) async throws -> String? {
         let session = LanguageModelSession(instructions: CompletionCleaner.instructions)
         let options = GenerationOptions(temperature: 0.15, maximumResponseTokens: 8)
-        let prompt = "Sentence: \(context)"
+        var prompt = ""
+        if let target, !target.isEmpty { prompt += "Writing in: \(target)\n" }
+        prompt += "Sentence: \(context)"
         let start = Date()
         let response = try await session.respond(to: prompt, options: options)
         let cleaned = CompletionCleaner.clean(response.content, context: context)
         QueryLog.shared.record(kind: "✦ frase", isPhrase: true, engine: "Apple",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: context, raw: response.content,
+                               context: context, target: target, raw: response.content,
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }
@@ -226,8 +238,8 @@ final class OllamaProvider: CompletionProvider {
         return response
     }
 
-    func complete(context: String) async throws -> String? {
-        let prompt = CompletionCleaner.phrasePrompt(context: context)
+    func complete(context: String, target: String?) async throws -> String? {
+        let prompt = CompletionCleaner.phrasePrompt(context: context, target: target)
         let start = Date()
         guard let response = try await generate(prompt: prompt, maxTokens: 8,
                                                 temperature: 0.15, stop: ["\n"]) else { return nil }
@@ -235,7 +247,8 @@ final class OllamaProvider: CompletionProvider {
         QueryLog.shared.record(kind: "✦ frase", isPhrase: true,
                                engine: "Ollama (\(Settings.ollamaModel))",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: context, raw: response, cleaned: cleaned ?? "(nada)")
+                               context: context, target: target,
+                               raw: response, cleaned: cleaned ?? "(nada)")
         return cleaned
     }
 

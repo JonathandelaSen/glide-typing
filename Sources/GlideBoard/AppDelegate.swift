@@ -418,16 +418,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let (rawContext, source) = completionContext()
         let context = CompletionCleaner.contextForModel(rawContext)
         guard context.split(separator: " ").count >= 2 else { return }
+        // Where the text will land (app, window, field) — read via AX so the
+        // model knows if it's completing a mail, a chat, a code editor…
+        let target = FocusedFieldReader.targetDescription(in: lastExternalApp)
         // Captured at request time: even if the next word cancels this query,
         // the context is a valid eval case once the ground truth is known.
-        evalExporter?.captureContext(context)
+        evalExporter?.captureContext(context, target: target)
         QueryLog.shared.currentSource = source
         completionTask = Task { @MainActor [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 if Task.isCancelled { return }
             }
-            let phrase = try? await provider.complete(context: context)
+            let phrase = try? await provider.complete(context: context, target: target)
             guard let self else { return }
             guard self.contextFingerprint == snapshot,
                   let phrase, !phrase.isEmpty else { return }
