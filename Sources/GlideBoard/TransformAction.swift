@@ -32,34 +32,39 @@ enum TransformAction: String, CaseIterable {
         }
     }
 
-    /// System prompt. The output contract — only the transformed text, no
-    /// quotes, no commentary — is what `TransformCleaner.clean` assumes.
+    /// System prompt. Written in English so the instruction language never
+    /// biases the output; every action that isn't `translate` ends with an
+    /// explicit "same language as the input" rule, which small models honour
+    /// far better than a buried clause. The output contract — only the
+    /// transformed text, no quotes — is what `TransformCleaner.clean` assumes.
     var instructions: String {
+        let sameLanguage = " Always write your reply in the SAME language as the "
+            + "input text; never translate it."
         switch self {
         case .fix:
-            return "Corrige la ortografía y la gramática del texto sin cambiar "
-                + "su significado, su tono ni su idioma. Responde ÚNICAMENTE con "
-                + "el texto corregido, sin comillas ni explicaciones."
+            return "Fix the spelling and grammar of the text without changing its "
+                + "meaning or tone. Reply with the corrected text ONLY, no quotes "
+                + "or explanations." + sameLanguage
         case .translate:
-            return "Traduce el texto: si está en español, al inglés; en cualquier "
-                + "otro caso, al español. Responde ÚNICAMENTE con la traducción, "
-                + "sin comillas ni explicaciones."
+            return "Translate the text: if it is in Spanish, translate it to "
+                + "English; otherwise, translate it to Spanish. Reply with the "
+                + "translation ONLY, no quotes or explanations."
         case .formal:
-            return "Reescribe el texto con un tono formal y profesional, sin "
-                + "cambiar su significado ni su idioma. Responde ÚNICAMENTE con "
-                + "el texto reescrito, sin comillas ni explicaciones."
+            return "Rewrite the text in a formal, professional tone without "
+                + "changing its meaning. Reply with the rewritten text ONLY, no "
+                + "quotes or explanations." + sameLanguage
         case .casual:
-            return "Reescribe el texto con un tono cercano y natural, sin "
-                + "cambiar su significado ni su idioma. Responde ÚNICAMENTE con "
-                + "el texto reescrito, sin comillas ni explicaciones."
+            return "Rewrite the text in a warm, natural tone without changing its "
+                + "meaning. Reply with the rewritten text ONLY, no quotes or "
+                + "explanations." + sameLanguage
         case .shorten:
-            return "Reescribe el texto de forma más breve conservando toda la "
-                + "información esencial, sin cambiar su idioma. Responde "
-                + "ÚNICAMENTE con el texto acortado, sin comillas ni explicaciones."
+            return "Rewrite the text more concisely while keeping all the "
+                + "essential information. Reply with the shortened text ONLY, no "
+                + "quotes or explanations." + sameLanguage
         case .lengthen:
-            return "Desarrolla el texto con algo más de detalle manteniendo su "
-                + "tono e idioma. Responde ÚNICAMENTE con el texto ampliado, "
-                + "sin comillas ni explicaciones."
+            return "Expand the text with a bit more detail while keeping its "
+                + "tone. Reply with the expanded text ONLY, no quotes or "
+                + "explanations." + sameLanguage
         }
     }
 
@@ -78,11 +83,12 @@ enum TransformAction: String, CaseIterable {
 /// the AX context of wherever it will land. Shares provider and menu with the
 /// transform actions.
 enum PromptAnywhere {
-    static let instructions = "Eres un asistente de redacción dentro de un teclado. "
-        + "El usuario te da una instrucción y, cuando existe, el contexto del campo "
-        + "donde se insertará el resultado. Escribe el texto pedido, listo para "
-        + "insertarse tal cual, en el idioma que pida el contexto o la instrucción. "
-        + "Responde ÚNICAMENTE con el texto generado, sin comillas ni explicaciones."
+    static let instructions = "You are a writing assistant inside a keyboard. "
+        + "The user gives you an instruction and, when available, the context of "
+        + "the field where the result will be inserted. Write the requested text, "
+        + "ready to be inserted as-is. Write it in the language of the surrounding "
+        + "text or draft; only switch languages if the instruction explicitly asks "
+        + "for it. Reply with the generated text ONLY, no quotes or explanations."
 
     /// The exact plain-text body sent to the model — also what lands in the
     /// debug console, so the user can audit every piece of context read.
@@ -105,7 +111,8 @@ enum TransformCleaner {
     /// model answered with meta-talk instead of a transformation.
     static func clean(_ raw: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        for prefix in ["resultado:", "respuesta:", "texto:", "traducción:", "traduccion:"] {
+        for prefix in ["resultado:", "respuesta:", "texto:", "traducción:", "traduccion:",
+                       "result:", "reply:", "text:", "translation:", "output:"] {
             if s.lowercased().hasPrefix(prefix) {
                 s = String(s.dropFirst(prefix.count))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -117,7 +124,8 @@ enum TransformCleaner {
             s = String(s.dropFirst().dropLast())
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let refusals = ["no puedo", "lo siento", "no hay texto", "no hay suficiente"]
+        let refusals = ["no puedo", "lo siento", "no hay texto", "no hay suficiente",
+                        "i can't", "i cannot", "i'm sorry", "i am sorry", "there is no"]
         guard !s.isEmpty,
               !refusals.contains(where: { s.lowercased().hasPrefix($0) }) else { return nil }
         return s

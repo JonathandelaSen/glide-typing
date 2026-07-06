@@ -25,8 +25,14 @@ precondition(TransformCleaner.clean("   ") == nil)
 
 // Prompts embed the text and demand a bare answer.
 precondition(TransformAction.fix.prompt(for: "ola ke ase").contains("ola ke ase"))
-precondition(TransformAction.allCases.allSatisfy { $0.instructions.contains("ÚNICAMENTE") })
+precondition(TransformAction.allCases.allSatisfy { $0.instructions.contains("ONLY") })
 precondition(TransformAction.fix.maxTokens(for: "corto") >= 80)
+
+// Language contract: every action but translate pins the output to the input
+// language, so a Spanish-worded prompt can't drag acortar/alargar off-language.
+precondition(TransformAction.allCases.allSatisfy {
+    ($0 == .translate) == !$0.instructions.contains("SAME language")
+})
 
 // Delivery split: predictable actions in place, the rest via board preview.
 precondition(TransformAction.fix.deliversInPlace && TransformAction.translate.deliversInPlace)
