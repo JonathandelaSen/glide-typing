@@ -58,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var lastInsertedWord: String?
     private var lastInsertedHadLeadingSpace = false
     private var lastOutputEndsInWordChar = false
+    // Double-space → ". " shortcut: armed by a space typed right after a word.
+    private var lastSpaceTapTime: TimeInterval = 0
+    private var spaceAfterWord = false
     /// Last fully-entered word — context for next-word prediction and learning.
     private var contextWord: String?
     /// Letters typed key-by-key, so tapped words also feed prediction context.
@@ -296,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         keyboardView.composerEnabled = composerEnabled
         keyboardView.dictationState = dictationController?.state ?? .idle
         keyboardView.composerView.delegate = self
+        updateAutoShift() // empty composer: start capitalized
 
         let size = keyboardView.frame.size
         panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size),
@@ -420,6 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             history?.record(s)
         }
         appendRecent(s)
+        updateAutoShift()
     }
 
     private func emitBackspace(_ count: Int = 1) {
@@ -429,6 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             TextInjector.pressKey(TextInjector.backspaceKey, times: count)
         }
         dropRecent(count)
+        updateAutoShift()
     }
 
     private func emitBackspaceWord() {
@@ -442,6 +448,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         // shadow of the recent text so we don't trust a stale transcript.
         recentText = ""
         contextWord = nil
+        updateAutoShift()
+    }
+
+    // MARK: - Capitalization
+
+    /// Sentence-start auto-capitalization. Only in composer mode — that's the
+    /// one place the text around the caret can be trusted.
+    private func updateAutoShift() {
+        guard composerEnabled else { return }
+        keyboardView.setAutoShift(shouldCapitalize(after: keyboardView.composerTextBeforeCaret))
+    }
+
+    private func shouldCapitalize(after text: String) -> Bool {
+        guard let last = text.last else { return true }
+        if last == "\n" { return true }
+        if "¿¡".contains(last) { return true }
+        // Sentence enders need the boundary space: "example.com" stays lower.
+        guard last == " " else { return false }
+        guard let ch = text.reversed().first(where: { $0 != " " }) else { return true }
+        return ".!?…".contains(ch)
+    }
+
+    /// Capitalization requested via the on-screen shift, applied to a word
+    /// inserted whole (glide, prediction chip). Consumes a one-shot shift.
+    private func applyShift(_ word: String, view: KeyboardView) -> String {
+        switch view.shiftState {
+        case .off:
+            return word
+        case .on:
+            view.consumeShift()
+            return word.prefix(1).uppercased() + word.dropFirst()
+        case .capsLock:
+            return word.uppercased()
+        }
+    }
+
+    /// Replicate the casing the user already typed onto a replacement word
+    /// ("H" + pick "hola" → "Hola"; "HOL" → "HOLA").
+    private func matchCase(of typed: String, to word: String) -> String {
+        guard let first = typed.first, first.isUppercase else { return word }
+        if typed.count > 1, typed.allSatisfy({ $0.isUppercase }) { return word.uppercased() }
+        return word.prefix(1).uppercased() + word.dropFirst()
     }
 
     /// Type the composer buffer into the focused app (optionally with Return).
@@ -566,6 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
         if composerText == text {
             keyboardView.composerClear()
+            updateAutoShift()
         } else {
             keyboardView.flash("Enviado; cambios nuevos conservados")
         }
@@ -711,6 +760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             tapBuffer = ""
             contextWord = words.last
         }
+        updateAutoShift()
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
@@ -994,7 +1044,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
                 // Punctuation ends the current word.
                 flushTapBuffer()
             }
+        case .text(let s):
+            emitText(s)
+            lastOutputEndsInWordChar = s.last?.isLetter ?? false
+            lastInsertedWord = nil
+            flushTapBuffer()
         case .space:
+            let now = Date.timeIntervalSinceReferenceDate
+            if spaceAfterWord, now - lastSpaceTapTime < 0.8, !view.isAutoRepeating,
+               doubleSpaceContextOK() {
+                // Double-space: swap the pending space for ". ".
+                emitBackspace(1)
+                emitText(". ")
+                spaceAfterWord = false
+                lastSpaceTapTime = 0
+                lastOutputEndsInWordChar = false
+                lastInsertedWord = nil
+                return
+            }
+            spaceAfterWord = lastOutputEndsInWordChar && !view.isAutoRepeating
+            lastSpaceTapTime = now
             emitText(" ")
             lastOutputEndsInWordChar = false
             lastInsertedWord = nil
@@ -1037,10 +1106,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
                     requestCompletion(afterDelay: 0.6)
                 }
             }
+        case .tab:
+            if composerEnabled {
+                emitText("\t")
+                lastOutputEndsInWordChar = false
+                lastInsertedWord = nil
+                flushTapBuffer()
+            } else {
+                // Field navigation in the target app.
+                TextInjector.pressKey(TextInjector.tabKey)
+                resetInsertionState()
+                view.candidates = []
+                view.predictions = []
+                view.ghost = nil
+            }
+        case .escape:
+            TextInjector.pressKey(TextInjector.escapeKey)
+        case .arrow(let direction):
+            if composerEnabled {
+                moveComposerCaret(direction)
+            } else {
+                TextInjector.pressKey(keyCode(for: direction))
+                // The cursor moved under us: the transcript and word state
+                // no longer describe what's at the caret.
+                recentText = ""
+                resetInsertionState()
+                view.candidates = []
+                view.predictions = []
+                view.ghost = nil
+            }
+        case .shift, .layer, .symbolsPage, .emojiCategory, .emojiPageDelta:
+            break // layout-only: handled inside KeyboardView
         case .language:
             switchLanguage(language.toggled())
         case .hide:
             hidePanel()
+        }
+    }
+
+    /// Composer-mode check for the double-space shortcut: exactly one space
+    /// at the caret, right after a word character.
+    private func doubleSpaceContextOK() -> Bool {
+        guard composerEnabled else { return true }
+        let before = keyboardView.composerTextBeforeCaret
+        guard before.hasSuffix(" "), !before.hasSuffix("  ") else { return false }
+        guard let ch = before.dropLast().last else { return false }
+        return ch.isLetter || ch.isNumber
+    }
+
+    private func moveComposerCaret(_ direction: ArrowKey) {
+        let composer = keyboardView.composerView!
+        switch direction {
+        case .left: composer.moveLeft(nil)
+        case .right: composer.moveRight(nil)
+        case .up: composer.moveUp(nil)
+        case .down: composer.moveDown(nil)
+        }
+    }
+
+    private func keyCode(for arrow: ArrowKey) -> CGKeyCode {
+        switch arrow {
+        case .left: return TextInjector.leftArrowKey
+        case .right: return TextInjector.rightArrowKey
+        case .up: return TextInjector.upArrowKey
+        case .down: return TextInjector.downArrowKey
         }
     }
 
@@ -1087,9 +1216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     private func insertGlideWord(_ word: String, alternatives: [String], view: KeyboardView) {
         flushTapBuffer()
+        let cased = applyShift(word, view: view)
         let needsSpace = lastOutputEndsInWordChar
-        emitText((needsSpace ? " " : "") + word)
-        lastInsertedWord = word
+        emitText((needsSpace ? " " : "") + cased)
+        lastInsertedWord = cased
         lastInsertedHadLeadingSpace = needsSpace
         lastOutputEndsInWordChar = true
         view.candidates = alternatives
@@ -1102,7 +1232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         // While tap-typing, the candidate row holds autocompletions for the
         // partial word: replace what's typed so far with the full word.
         if !tapBuffer.isEmpty {
-            let picked = view.candidates[index]
+            let picked = matchCase(of: tapBuffer, to: view.candidates[index])
             emitBackspace(tapBuffer.count)
             emitText(picked)
             tapBuffer = ""
@@ -1117,11 +1247,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         // Otherwise: replace the word just glided with the chosen alternative.
         guard let current = lastInsertedWord else { return }
         let picked = view.candidates[index]
-        guard picked != current else { return }
+        guard picked.lowercased() != current.lowercased() else { return }
         personalWords.learn(picked, weight: 4)
+        let cased = matchCase(of: current, to: picked)
         emitBackspace(current.count)
-        emitText(picked)
-        lastInsertedWord = picked
+        emitText(cased)
+        lastInsertedWord = cased
         contextWord = picked
         refreshPredictions()
         requestCompletion()
@@ -1135,9 +1266,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         // commitWord refills the row with predictions after `picked`, so
         // frequent phrases can be chained chip by chip.
         if tapBuffer.isEmpty {
+            let cased = applyShift(picked, view: view)
             let needsSpace = lastOutputEndsInWordChar
-            emitText((needsSpace ? " " : "") + picked)
-            lastInsertedWord = picked
+            emitText((needsSpace ? " " : "") + cased)
+            lastInsertedWord = cased
             lastInsertedHadLeadingSpace = needsSpace
             lastOutputEndsInWordChar = true
             view.candidates = []
@@ -1147,10 +1279,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
 
         // Mid-word: the chip extends the partial word — replace it.
+        let cased = matchCase(of: tapBuffer, to: picked)
         emitBackspace(tapBuffer.count)
-        emitText(picked)
+        emitText(cased)
         tapBuffer = ""
-        lastInsertedWord = picked
+        lastInsertedWord = cased
         lastInsertedHadLeadingSpace = false
         lastOutputEndsInWordChar = true
         view.candidates = []
@@ -1273,6 +1406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
                 view.predictions = []
                 view.ghost = nil
             }
+            updateAutoShift()
             return
         }
 

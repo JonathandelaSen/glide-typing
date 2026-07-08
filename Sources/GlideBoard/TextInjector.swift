@@ -52,6 +52,9 @@ enum TextInjector {
     static let backspaceKey: CGKeyCode = 51
     static let returnKey: CGKeyCode = 36
     static let forwardDeleteKey: CGKeyCode = 117
+    static let tabKey: CGKeyCode = 48
+    static let escapeKey: CGKeyCode = 53
+    static let leftArrowKey: CGKeyCode = 123
     static let downArrowKey: CGKeyCode = 125
     static let upArrowKey: CGKeyCode = 126
     static let rightArrowKey: CGKeyCode = 124

@@ -85,6 +85,15 @@ final class KeyboardView: NSView {
     private(set) var layout: KeyboardLayout
     private(set) var language: Language
 
+    /// Which layer/shift/emoji page is showing. The layout is rebuilt from
+    /// this whenever it changes; the view owns it because it only affects
+    /// which keys are drawn, never the text state.
+    private(set) var state = LayoutState()
+    /// True while the current `.on` shift was raised by auto-capitalization,
+    /// so it can be lowered again without stepping on a manual shift.
+    private var shiftIsAutomatic = false
+    private var lastShiftTapTime: TimeInterval = 0
+
     /// Alternatives for the last glided word (or live preview while gliding).
     var candidates: [String] = [] {
         didSet { needsDisplay = true }
@@ -346,7 +355,7 @@ final class KeyboardView: NSView {
 
     init(language: Language, scale: CGFloat = 1.0) {
         self.language = language
-        self.layout = KeyboardLayout.build(for: language)
+        self.layout = KeyboardLayout.build(for: language, state: LayoutState())
         self.unit = KeyboardView.baseUnit * scale
         let size = KeyboardView.preferredSize(for: self.layout, unit: self.unit)
         super.init(frame: NSRect(origin: .zero, size: size))
@@ -364,11 +373,116 @@ final class KeyboardView: NSView {
 
     func setLanguage(_ lang: Language) {
         language = lang
-        layout = KeyboardLayout.build(for: lang)
+        layout = KeyboardLayout.build(for: lang, state: state)
         candidates = []
         predictions = []
         ghost = nil
         needsDisplay = true
+    }
+
+    private func rebuildLayout() {
+        layout = KeyboardLayout.build(for: language, state: state)
+        hoverKeyIndex = nil
+        needsDisplay = true
+    }
+
+    // MARK: - Layer & shift state
+
+    var shiftState: ShiftState { state.shift }
+
+    /// Lower a one-shot shift after it capitalized one input. Caps lock stays.
+    func consumeShift() {
+        guard state.shift == .on else { return }
+        state.shift = .off
+        shiftIsAutomatic = false
+        rebuildLayout()
+    }
+
+    /// Sentence-start auto-capitalization: raises shift only from `.off`,
+    /// and lowers only what it raised — never a manual shift or caps lock.
+    func setAutoShift(_ on: Bool) {
+        if on {
+            guard state.shift == .off else { return }
+            state.shift = .on
+            shiftIsAutomatic = true
+            rebuildLayout()
+        } else if state.shift == .on && shiftIsAutomatic {
+            state.shift = .off
+            shiftIsAutomatic = false
+            rebuildLayout()
+        }
+    }
+
+    private func tapShift() {
+        let now = Date.timeIntervalSinceReferenceDate
+        // Double-tap only escalates a fresh one-shot shift to caps lock;
+        // otherwise a quick tap must still be able to turn caps lock off.
+        if state.shift == .on, now - lastShiftTapTime < 0.35 {
+            state.shift = .capsLock
+        } else {
+            switch state.shift {
+            case .off: state.shift = .on
+            case .on, .capsLock: state.shift = .off
+            }
+        }
+        shiftIsAutomatic = false
+        lastShiftTapTime = now
+        rebuildLayout()
+    }
+
+    /// Route a tapped key. Layout-only actions (shift, layer switches, emoji
+    /// navigation) are absorbed here; everything else goes to the delegate.
+    /// A one-shot shift is consumed by the input it capitalized.
+    func dispatchTap(_ key: Key) {
+        if handleLayoutAction(key.action) { return }
+        if case .text(let s) = key.action, state.layer == .emoji {
+            EmojiCatalog.recordRecent(s)
+        }
+        delegate?.keyboardView(self, didTap: key)
+        switch key.action {
+        case .char(let c) where c.isLetter:
+            consumeShift()
+        case .text:
+            consumeShift()
+        default:
+            break
+        }
+    }
+
+    private func handleLayoutAction(_ action: KeyAction) -> Bool {
+        switch action {
+        case .shift:
+            tapShift()
+            return true
+        case .layer(let layer):
+            resetTraceState()
+            state.layer = layer
+            if layer == .symbols { state.symbolsPage = 0 }
+            if layer == .emoji {
+                state.emojiCategory = EmojiCatalog.defaultCategory
+                state.emojiPage = 0
+            }
+            rebuildLayout()
+            return true
+        case .symbolsPage(let page):
+            state.symbolsPage = page
+            rebuildLayout()
+            return true
+        case .emojiCategory(let index):
+            state.emojiCategory = index
+            state.emojiPage = 0
+            rebuildLayout()
+            return true
+        case .emojiPageDelta(let delta):
+            let pages = EmojiCatalog.pageCount(category: state.emojiCategory)
+            let next = min(max(0, state.emojiPage + delta), pages - 1)
+            guard next != state.emojiPage else { return true }
+            state.emojiPage = next
+            rebuildLayout()
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - Geometry helpers
@@ -429,7 +543,9 @@ final class KeyboardView: NSView {
         for key in layout.keys {
             if let ch = key.letter {
                 let f = pixelFrame(for: key)
-                out[ch] = CGPoint(x: f.midX, y: f.midY)
+                // The decoder and lexicon work in lowercase even when the
+                // shifted layer shows uppercase caps.
+                out[Character(String(ch).lowercased())] = CGPoint(x: f.midX, y: f.midY)
             }
         }
         return out
@@ -578,10 +694,125 @@ final class KeyboardView: NSView {
         tracePoints = [p]
         pressedKeyIndex = keyIndex(at: p)
         hoverKeyIndex = pressedKeyIndex
-        if let idx = pressedKeyIndex, layout.keys[idx].action == .backspace {
-            startBackspaceHold()
+        if let idx = pressedKeyIndex {
+            let key = layout.keys[idx]
+            if key.action == .backspace {
+                startBackspaceHold()
+            } else if isRepeatable(key.action) {
+                startKeyRepeat(key)
+            } else if !key.alternates.isEmpty {
+                scheduleAltPopover(for: idx)
+            }
         }
         needsDisplay = true
+    }
+
+    // MARK: - Long-press alternates (accents, inverted punctuation…)
+
+    private struct AltPopoverState {
+        let keyIndex: Int
+        let alternates: [String]
+        var selected: Int
+        let frame: CGRect
+        let cellWidth: CGFloat
+    }
+    private var altPopover: AltPopoverState?
+    private var altTimer: Timer?
+
+    private func scheduleAltPopover(for index: Int) {
+        altTimer?.invalidate()
+        let t = Timer(timeInterval: 0.45, repeats: false) { [weak self] _ in
+            self?.presentAltPopover(for: index)
+        }
+        RunLoop.main.add(t, forMode: .common)
+        altTimer = t
+    }
+
+    private func cancelAltTimer() {
+        altTimer?.invalidate()
+        altTimer = nil
+    }
+
+    private func presentAltPopover(for index: Int) {
+        // A hold that already moved is a glide, not a long-press.
+        guard tracking, pressedKeyIndex == index,
+              GestureDecoder.pathLength(tracePoints) < unit * 0.35,
+              index < layout.keys.count else { return }
+        let key = layout.keys[index]
+        guard !key.alternates.isEmpty else { return }
+        let keyFrame = pixelFrame(for: key)
+        let cellWidth = max(38, unit * 0.72)
+        let width = cellWidth * CGFloat(key.alternates.count) + 8
+        var x = keyFrame.midX - width / 2
+        x = min(max(KeyboardView.margin, x), bounds.width - KeyboardView.margin - width)
+        let height = max(40, unit * 0.8)
+        let y = max(barHeight, keyFrame.minY - height - 6)
+        altPopover = AltPopoverState(keyIndex: index, alternates: key.alternates,
+                                     selected: 0,
+                                     frame: CGRect(x: x, y: y, width: width, height: height),
+                                     cellWidth: cellWidth)
+        needsDisplay = true
+    }
+
+    private func updateAltSelection(at p: CGPoint) {
+        guard var pop = altPopover else { return }
+        let raw = Int((p.x - pop.frame.minX - 4) / pop.cellWidth)
+        pop.selected = min(max(0, raw), pop.alternates.count - 1)
+        altPopover = pop
+        needsDisplay = true
+    }
+
+    private func commitAltPopover() {
+        guard let pop = altPopover else { return }
+        altPopover = nil
+        let s = pop.alternates[pop.selected]
+        let action: KeyAction = s.count == 1 ? .char(s.first!) : .text(s)
+        dispatchTap(Key(action: action, label: s, unitFrame: .zero))
+    }
+
+    // MARK: - Key auto-repeat (space, arrows)
+
+    /// True while a repeat tick is being delivered — lets the delegate tell
+    /// held-key repeats apart from deliberate taps (e.g. double-space → ". ").
+    private(set) var isAutoRepeating = false
+    private var keyRepeatTimer: Timer?
+    private var keyRepeatDidFire = false
+    private var keyRepeatKey: Key?
+
+    private func isRepeatable(_ action: KeyAction) -> Bool {
+        if action == .space { return true }
+        if case .arrow = action { return true }
+        return false
+    }
+
+    private func startKeyRepeat(_ key: Key) {
+        keyRepeatTimer?.invalidate()
+        keyRepeatDidFire = false
+        keyRepeatKey = key
+        scheduleKeyRepeatTick(after: 0.4)
+    }
+
+    private func scheduleKeyRepeatTick(after interval: TimeInterval) {
+        let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            self?.fireKeyRepeat()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        keyRepeatTimer = t
+    }
+
+    private func fireKeyRepeat() {
+        guard let key = keyRepeatKey else { return }
+        keyRepeatDidFire = true
+        isAutoRepeating = true
+        delegate?.keyboardView(self, didTap: key)
+        isAutoRepeating = false
+        scheduleKeyRepeatTick(after: 0.09)
+    }
+
+    private func stopKeyRepeat() {
+        keyRepeatTimer?.invalidate()
+        keyRepeatTimer = nil
+        keyRepeatKey = nil
     }
 
     // MARK: - Backspace press-and-hold
@@ -624,6 +855,12 @@ final class KeyboardView: NSView {
         guard tracking else { return }
         let p = convert(event.locationInWindow, from: nil)
 
+        // While the alternates popover is up, dragging only moves its selection.
+        if altPopover != nil {
+            updateAltSelection(at: p)
+            return
+        }
+
         if p.y < keysOriginY {
             // Pointer is up in the suggestion rows: freeze the trace and
             // highlight the candidate under the pointer for drag-to-select.
@@ -642,6 +879,14 @@ final class KeyboardView: NSView {
            hoverKeyIndex.map({ layout.keys[$0].action }) != .backspace {
             stopBackspaceHold()
         }
+        // Moving off the pressed key cancels held-key repeat and the
+        // long-press popover — the gesture became a glide or a slide-away.
+        if keyRepeatTimer != nil, hoverKeyIndex != pressedKeyIndex {
+            stopKeyRepeat()
+        }
+        if altTimer != nil, GestureDecoder.pathLength(tracePoints) > unit * 0.35 {
+            cancelAltTimer()
+        }
 
         // Throttled live preview of the word being formed.
         let now = Date.timeIntervalSinceReferenceDate
@@ -657,6 +902,29 @@ final class KeyboardView: NSView {
         guard tracking else { return }
         tracking = false
         stopBackspaceHold()
+        cancelAltTimer()
+        // Long-press popover: the release commits the highlighted alternate.
+        if altPopover != nil {
+            stopKeyRepeat()
+            pressedKeyIndex = nil
+            hoverKeyIndex = nil
+            tracePoints = []
+            hoverCandidateIndex = nil
+            needsDisplay = true
+            commitAltPopover()
+            return
+        }
+        // A held key already repeated — don't also emit the release tap.
+        if keyRepeatDidFire {
+            stopKeyRepeat()
+            keyRepeatDidFire = false
+            pressedKeyIndex = nil
+            hoverKeyIndex = nil
+            tracePoints = []
+            needsDisplay = true
+            return
+        }
+        stopKeyRepeat()
         // The hold already deleted plenty — don't also emit a tap-delete.
         if backspaceDidRepeat {
             backspaceDidRepeat = false
@@ -692,7 +960,7 @@ final class KeyboardView: NSView {
                     // Drag mode: a soft tap starts gliding without holding.
                     startTapTrace(at: convert(event.locationInWindow, from: nil), keyIndex: idx)
                 } else {
-                    delegate?.keyboardView(self, didTap: key)
+                    dispatchTap(key)
                 }
             }
         } else if let idx = pressedKeyIndex, layout.keys[idx].isLetter {
@@ -768,7 +1036,7 @@ final class KeyboardView: NSView {
         if length < unit * 0.45 {
             // tap-tap without movement: the user wanted that letter.
             if typeLetterIfShort, let pressed {
-                delegate?.keyboardView(self, didTap: layout.keys[pressed])
+                dispatchTap(layout.keys[pressed])
             }
         } else {
             delegate?.keyboardView(self, didGlide: points)
@@ -1075,6 +1343,8 @@ final class KeyboardView: NSView {
             s.draw(at: CGPoint(x: bounds.midX - size.width / 2, y: keysMidY - size.height / 2))
         }
 
+        drawAltPopover()
+
         drawHelpButton()
         drawHistoryButton()
         drawDictationButton()
@@ -1192,7 +1462,7 @@ final class KeyboardView: NSView {
                                                 .foregroundColor: NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
                                             ])
         circleHint.draw(at: CGPoint(x: area.midX - circleHint.size().width / 2, y: area.maxY - 42))
-        let hint = NSAttributedString(string: "clic derecho: pegar · copiar todo · borrar hasta el final / principio · borrar todo",
+        let hint = NSAttributedString(string: "mantén una tecla: acentos y variantes · clic derecho: pegar · copiar · borrar",
                                       attributes: [
                                           .font: NSFont.systemFont(ofSize: 11, weight: .medium),
                                           .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1)
@@ -1329,26 +1599,101 @@ final class KeyboardView: NSView {
 
     private func drawKey(_ key: Key, highlighted: Bool) {
         let rect = pixelFrame(for: key)
+
+        // Emoji grid cells: bare glyphs, no key cap.
+        if state.layer == .emoji, case .text = key.action {
+            if highlighted {
+                NSColor(calibratedRed: 0.25, green: 0.5, blue: 1.0, alpha: 0.6).setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+            }
+            let s = NSAttributedString(string: key.label, attributes: [
+                .font: NSFont.systemFont(ofSize: min(26, unit * 0.48))
+            ])
+            let size = s.size()
+            s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+            return
+        }
+
         // Character keys (letters, digits, punctuation) share the light style.
         let isSpecial: Bool
-        if case .char = key.action { isSpecial = false } else { isSpecial = true }
+        switch key.action {
+        case .char, .text: isSpecial = false
+        default: isSpecial = true
+        }
         var fill = isSpecial
             ? NSColor(calibratedWhite: 0.22, alpha: 1)
             : NSColor(calibratedWhite: 0.30, alpha: 1)
+        // Active states: shift/caps engaged, or the selected emoji category.
+        if case .shift = key.action, state.shift != .off {
+            fill = state.shift == .capsLock
+                ? NSColor(calibratedRed: 0.30, green: 0.45, blue: 0.75, alpha: 1)
+                : NSColor(calibratedRed: 0.24, green: 0.34, blue: 0.5, alpha: 1)
+        }
+        if case .emojiCategory(let i) = key.action, i == state.emojiCategory {
+            fill = NSColor(calibratedRed: 0.24, green: 0.34, blue: 0.5, alpha: 1)
+        }
         if highlighted {
             fill = NSColor(calibratedRed: 0.25, green: 0.5, blue: 1.0, alpha: 1)
         }
         fill.setFill()
         NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
 
-        let fontSize: CGFloat = key.isLetter ? 20 : 14
+        var textColor = NSColor.white
+        // Paging arrows go dim at the ends of the category.
+        if case .emojiPageDelta(let d) = key.action {
+            let pages = EmojiCatalog.pageCount(category: state.emojiCategory)
+            if (d < 0 && state.emojiPage == 0) || (d > 0 && state.emojiPage >= pages - 1) {
+                textColor = NSColor(calibratedWhite: 0.45, alpha: 1)
+            }
+        }
+
+        let fontSize: CGFloat
+        switch key.action {
+        case .char(let c) where c.isLetter: fontSize = 20
+        case .char where state.layer == .symbols: fontSize = 17
+        case .emojiCategory: fontSize = 16
+        default: fontSize = 14
+        }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: key.isLetter ? .regular : .medium),
-            .foregroundColor: NSColor.white
+            .foregroundColor: textColor
         ]
         let s = NSAttributedString(string: key.label, attributes: attrs)
         let size = s.size()
         s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+
+        // A faint dot marks keys with long-press alternates.
+        if !key.alternates.isEmpty {
+            NSColor(calibratedWhite: 0.5, alpha: 1).setFill()
+            NSBezierPath(ovalIn: CGRect(x: rect.maxX - 8, y: rect.minY + 4,
+                                        width: 3, height: 3)).fill()
+        }
+    }
+
+    private func drawAltPopover() {
+        guard let pop = altPopover else { return }
+        NSColor(calibratedWhite: 0.17, alpha: 0.98).setFill()
+        let path = NSBezierPath(roundedRect: pop.frame, xRadius: 10, yRadius: 10)
+        path.fill()
+        NSColor(calibratedWhite: 0.38, alpha: 1).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        for (i, alt) in pop.alternates.enumerated() {
+            let cell = CGRect(x: pop.frame.minX + 4 + CGFloat(i) * pop.cellWidth,
+                              y: pop.frame.minY + 4,
+                              width: pop.cellWidth,
+                              height: pop.frame.height - 8)
+            if i == pop.selected {
+                NSColor(calibratedRed: 0.25, green: 0.5, blue: 1.0, alpha: 1).setFill()
+                NSBezierPath(roundedRect: cell.insetBy(dx: 2, dy: 0), xRadius: 6, yRadius: 6).fill()
+            }
+            let s = NSAttributedString(string: alt, attributes: [
+                .font: NSFont.systemFont(ofSize: 18),
+                .foregroundColor: NSColor.white
+            ])
+            let size = s.size()
+            s.draw(at: CGPoint(x: cell.midX - size.width / 2, y: cell.midY - size.height / 2))
+        }
     }
 
     private func drawTrace() {

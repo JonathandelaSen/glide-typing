@@ -33,10 +33,12 @@ final class WhisperKitDictationEngine: DictationEngine {
     }
 
     func startRecording() async throws {
+        let inputDevices = AudioProcessor.getAudioDevices()
+        try requireMicrophoneInput(deviceCount: inputDevices.count)
         guard await AudioProcessor.requestRecordPermission() else {
             throw WhisperKitDictationError.microphonePermissionDenied
         }
-        try audioProcessor.startRecordingLive(inputDeviceID: nil, callback: nil)
+        try audioProcessor.startRecordingLive(inputDeviceID: inputDevices[0].id, callback: nil)
     }
 
     func stopRecordingAndTranscribe(language: String) async throws -> String {
