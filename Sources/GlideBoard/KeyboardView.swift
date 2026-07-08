@@ -1,5 +1,6 @@
 import AppKit
 
+@MainActor
 protocol KeyboardViewDelegate: AnyObject {
     func keyboardView(_ view: KeyboardView, didTap key: Key)
     func keyboardView(_ view: KeyboardView, didGlide points: [CGPoint])
@@ -30,6 +31,8 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardViewDidResize(_ view: KeyboardView)
     /// Show/hide the typed-text history panel.
     func keyboardViewDidToggleHistory(_ view: KeyboardView)
+    /// Start or finish local WhisperKit dictation from the toolbar button.
+    func keyboardViewDidToggleDictation(_ view: KeyboardView)
 }
 
 /// Two-finger swipe directions and their shortcut actions.
@@ -312,6 +315,10 @@ final class KeyboardView: NSView {
         didSet { if oldValue != historyVisible { needsDisplay = true } }
     }
 
+    var dictationState: DictationState = .idle {
+        didSet { if oldValue != dictationState { needsDisplay = true } }
+    }
+
     /// Toolbar buttons, laid out with the shared uiScale so they stay legible
     /// at any keyboard size.
     private var toolbarButtonSize: CGSize { CGSize(width: 34 * uiScale, height: 22 * uiScale) }
@@ -326,6 +333,12 @@ final class KeyboardView: NSView {
     private var historyButtonRect: CGRect {
         let s = toolbarButtonSize
         return CGRect(x: helpButtonRect.minX - s.width - 6 * uiScale,
+                      y: toolbarButtonY, width: s.width, height: s.height)
+    }
+
+    private var dictationButtonRect: CGRect {
+        let s = toolbarButtonSize
+        return CGRect(x: modeButtonRect.maxX + 6 * uiScale,
                       y: toolbarButtonY, width: s.width, height: s.height)
     }
 
@@ -484,6 +497,13 @@ final class KeyboardView: NSView {
         // Mode switch (tap ↔ drag) in the handle strip.
         if modeButtonRect.insetBy(dx: -4, dy: -4).contains(p) && !showHelp {
             toggleInputMode()
+            return
+        }
+
+        if dictationButtonWasPressed(at: p, buttonRect: dictationButtonRect,
+                                     helpVisible: showHelp)
+        {
+            delegate?.keyboardViewDidToggleDictation(self)
             return
         }
 
@@ -1057,14 +1077,16 @@ final class KeyboardView: NSView {
 
         drawHelpButton()
         drawHistoryButton()
+        drawDictationButton()
         drawModeButton()
         if showHelp { drawHelpOverlay() }
     }
 
     /// Shared pill style for the toolbar-strip buttons.
-    private func drawToolbarButton(in rect: CGRect, symbol: String, active: Bool) {
+    private func drawToolbarButton(in rect: CGRect, symbol: String, active: Bool,
+                                   activeColor: NSColor? = nil) {
         if active {
-            NSColor(calibratedRed: 0.24, green: 0.34, blue: 0.5, alpha: 1).setFill()
+            (activeColor ?? NSColor(calibratedRed: 0.24, green: 0.34, blue: 0.5, alpha: 1)).setFill()
         } else {
             NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
         }
@@ -1086,6 +1108,29 @@ final class KeyboardView: NSView {
 
     private func drawHistoryButton() {
         drawToolbarButton(in: historyButtonRect, symbol: "⟲", active: historyVisible)
+    }
+
+    private func drawDictationButton() {
+        let symbol: String
+        let active: Bool
+        let color: NSColor?
+        switch dictationState {
+        case .idle:
+            (symbol, active, color) = ("🎙", false, nil)
+        case .preparing:
+            (symbol, active, color) = ("◉", true, nil)
+        case .recording:
+            (symbol, active, color) = (
+                "■", true,
+                NSColor(calibratedRed: 0.7, green: 0.18, blue: 0.2, alpha: 1)
+            )
+        case .transcribing:
+            (symbol, active, color) = ("…", true, nil)
+        case .failed:
+            (symbol, active, color) = ("!", false, nil)
+        }
+        drawToolbarButton(in: dictationButtonRect, symbol: symbol,
+                          active: active, activeColor: color)
     }
 
     private func drawHelpButton() {

@@ -26,6 +26,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>GlideBoard usa el micrófono para transcribir dictado localmente con WhisperKit.</string>
 </dict>
 </plist>
 PLIST

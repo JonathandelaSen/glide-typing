@@ -13,6 +13,9 @@ struct ModelQuery {
     let context: String
     /// Where the text will land ("Mail — Re: informe"), from the AX tree.
     let target: String?
+    /// The exact text sent to the model — system instructions plus the user
+    /// turn — so the console can be used to debug and tune prompts verbatim.
+    let prompt: String?
     let raw: String
     let cleaned: String
     let date = Date()
@@ -32,9 +35,11 @@ final class QueryLog {
     private(set) var phraseLLMCalls = 0
 
     func record(kind: String, isPhrase: Bool, engine: String, ms: Int,
-                context: String, target: String? = nil, raw: String, cleaned: String) {
+                context: String, target: String? = nil, prompt: String? = nil,
+                raw: String, cleaned: String) {
         let query = ModelQuery(kind: kind, isPhrase: isPhrase, engine: engine, ms: ms,
                                source: currentSource, context: context, target: target,
+                               prompt: prompt,
                                raw: raw.trimmingCharacters(in: .whitespacesAndNewlines),
                                cleaned: cleaned)
         DispatchQueue.main.async {
@@ -156,21 +161,26 @@ final class SystemModelProvider: CompletionProvider {
         let cleaned = CompletionCleaner.clean(response.content, context: context)
         QueryLog.shared.record(kind: "✦ frase", isPhrase: true, engine: "Apple",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: context, target: target, raw: response.content,
+                               context: context, target: target,
+                               prompt: "[instructions]\n\(CompletionCleaner.instructions)\n\n[user]\n\(prompt)",
+                               raw: response.content,
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }
 
     func transform(action: TransformAction, text: String) async throws -> String? {
+        let userTurn = "Texto:\n\(text)"
         let session = LanguageModelSession(instructions: action.instructions)
         let options = GenerationOptions(temperature: 0.2,
                                         maximumResponseTokens: action.maxTokens(for: text))
         let start = Date()
-        let response = try await session.respond(to: "Texto:\n\(text)", options: options)
+        let response = try await session.respond(to: userTurn, options: options)
         let cleaned = TransformCleaner.clean(response.content)
         QueryLog.shared.record(kind: "🔧 \(action.title)", isPhrase: false, engine: "Apple",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: text, raw: response.content,
+                               context: text,
+                               prompt: "[instructions]\n\(action.instructions)\n\n[user]\n\(userTurn)",
+                               raw: response.content,
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }
@@ -187,7 +197,9 @@ final class SystemModelProvider: CompletionProvider {
         let cleaned = TransformCleaner.clean(response.content)
         QueryLog.shared.record(kind: "✍️ instrucción", isPhrase: false, engine: "Apple",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: body, target: target, raw: response.content,
+                               context: body, target: target,
+                               prompt: "[instructions]\n\(PromptAnywhere.instructions)\n\n[user]\n\(body)",
+                               raw: response.content,
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }
@@ -236,22 +248,23 @@ final class OllamaProvider: CompletionProvider {
         QueryLog.shared.record(kind: "✦ frase", isPhrase: true,
                                engine: "Ollama (\(Settings.ollamaModel))",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: context, target: target,
+                               context: context, target: target, prompt: prompt,
                                raw: response, cleaned: cleaned ?? "(nada)")
         return cleaned
     }
 
     func transform(action: TransformAction, text: String) async throws -> String? {
+        let prompt = action.prompt(for: text)
         let start = Date()
         // No "\n" stop token here: transformed text is often multi-line.
-        guard let response = try await generate(prompt: action.prompt(for: text),
+        guard let response = try await generate(prompt: prompt,
                                                 maxTokens: action.maxTokens(for: text),
                                                 temperature: 0.2) else { return nil }
         let cleaned = TransformCleaner.clean(response)
         QueryLog.shared.record(kind: "🔧 \(action.title)", isPhrase: false,
                                engine: "Ollama (\(Settings.ollamaModel))",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: text, raw: response,
+                               context: text, prompt: prompt, raw: response,
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }
@@ -269,7 +282,7 @@ final class OllamaProvider: CompletionProvider {
         QueryLog.shared.record(kind: "✍️ instrucción", isPhrase: false,
                                engine: "Ollama (\(Settings.ollamaModel))",
                                ms: Int(-start.timeIntervalSinceNow * 1000),
-                               context: body, target: target, raw: response,
+                               context: body, target: target, prompt: prompt, raw: response,
                                cleaned: cleaned ?? "(nada)")
         return cleaned
     }

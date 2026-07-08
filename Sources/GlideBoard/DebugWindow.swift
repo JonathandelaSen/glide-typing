@@ -128,6 +128,7 @@ final class ModelConsole {
         """
         [\(q.kind)] \(q.ms)ms · \(q.engine) · \(q.source) · \(Self.timeFormat.string(from: q.date))
         dst: \(q.target ?? "—")
+        prompt: \(q.prompt ?? "—")
         ctx: \(q.context)
         raw: \(q.raw)
         →:   \(q.cleaned)
@@ -209,6 +210,11 @@ final class ModelConsole {
         let targetField = makeField(line("dst", q.target ?? "—",
                                          color: NSColor(calibratedRed: 0.75, green: 0.65, blue: 0.95, alpha: 1)))
         targetField.maximumNumberOfLines = 1
+        // The exact prompt sent — the field you tune against. Given the most
+        // room since it carries the system instructions plus the user turn.
+        let promptField = makeField(line("prompt", q.prompt ?? "—",
+                                        color: NSColor(calibratedRed: 0.55, green: 0.75, blue: 0.95, alpha: 1)))
+        promptField.maximumNumberOfLines = 10
         let contextField = makeField(line("ctx", q.context, color: NSColor(calibratedWhite: 0.6, alpha: 1)))
         contextField.maximumNumberOfLines = 3
         let rawField = makeField(line("raw", q.raw, color: NSColor(calibratedWhite: 0.78, alpha: 1)))
@@ -225,7 +231,7 @@ final class ModelConsole {
         headerRow.orientation = .horizontal
         headerRow.spacing = 4
 
-        let inner = NSStackView(views: [headerRow, targetField, contextField, rawField, cleanField])
+        let inner = NSStackView(views: [headerRow, targetField, promptField, contextField, rawField, cleanField])
         inner.orientation = .vertical
         inner.alignment = .leading
         inner.spacing = 3

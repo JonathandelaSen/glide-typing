@@ -7,6 +7,7 @@ import AppKit
 private final class FlickSpy: NSObject, KeyboardViewDelegate {
     var flicks: [FlickDirection] = []
     var insertReturns: [Bool] = []
+    var dictationToggleCount = 0
 
     func keyboardView(_ view: KeyboardView, didTap key: Key) {}
     func keyboardView(_ view: KeyboardView, didGlide points: [CGPoint]) {}
@@ -15,13 +16,18 @@ private final class FlickSpy: NSObject, KeyboardViewDelegate {
     func keyboardView(_ view: KeyboardView, didPickPrediction index: Int) {}
     func keyboardView(_ view: KeyboardView, didPickGhost text: String) {}
     func keyboardView(_ view: KeyboardView, didGlideSelect index: Int) {}
-    func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection) { flicks.append(direction) }
+    func keyboardView(_ view: KeyboardView, didFlick direction: FlickDirection, long: Bool) {
+        flicks.append(direction)
+    }
     func keyboardView(_ view: KeyboardView, didEdit action: EditAction) {}
     func keyboardView(_ view: KeyboardView, didSetHoverGlide enabled: Bool) {}
     func keyboardView(_ view: KeyboardView, didRepeatBackspaceByWord byWord: Bool) {}
     func keyboardView(_ view: KeyboardView, didRequestInsert pressReturn: Bool) { insertReturns.append(pressReturn) }
     func keyboardViewDidRequestCopy(_ view: KeyboardView) {}
+    func keyboardViewDidRequestTransform(_ view: KeyboardView) {}
     func keyboardViewDidResize(_ view: KeyboardView) {}
+    func keyboardViewDidToggleHistory(_ view: KeyboardView) {}
+    func keyboardViewDidToggleDictation(_ view: KeyboardView) { dictationToggleCount += 1 }
 }
 
 final class SwipeGestureTests: XCTestCase {

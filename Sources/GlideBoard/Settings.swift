@@ -40,6 +40,26 @@ enum Settings {
         set { defaults.set(NSNumber(value: newValue), forKey: "transformHotKeyModifiers") }
     }
 
+    /// Push-to-talk shortcut for local WhisperKit dictation.
+    static var dictationHotKeyCode: UInt32 {
+        get { (defaults.object(forKey: "dictationHotKeyCode") as? NSNumber)?.uint32Value ?? UInt32(kVK_Space) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "dictationHotKeyCode") }
+    }
+
+    static var dictationHotKeyModifiers: UInt32 {
+        get {
+            (defaults.object(forKey: "dictationHotKeyModifiers") as? NSNumber)?.uint32Value
+                ?? UInt32(controlKey | optionKey)
+        }
+        set { defaults.set(NSNumber(value: newValue), forKey: "dictationHotKeyModifiers") }
+    }
+
+    /// Core ML model downloaded by WhisperKit on first use.
+    static var dictationModel: String {
+        get { defaults.string(forKey: "dictationModel") ?? "small" }
+        set { defaults.set(newValue, forKey: "dictationModel") }
+    }
+
     /// Plan B: opt-in to reading visible text around the focused field (AX)
     /// as context for free-instruction generation. Off by default — it reads
     /// screen content beyond the field itself.

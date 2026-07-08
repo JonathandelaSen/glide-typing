@@ -56,6 +56,8 @@ final class ShortcutField: NSButton {
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onFocusHotKeyChange: ((UInt32, UInt32) -> Void)?
+    var onDictationHotKeyChange: ((UInt32, UInt32) -> Void)?
+    var onDictationModelChange: (() -> Void)?
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
     var onCompletionEngineChange: (() -> Void)?
@@ -69,10 +71,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var languagePopup: NSPopUpButton!
     private var enginePopup: NSPopUpButton!
     private var ollamaModelPopup: NSPopUpButton!
+    private var dictationModelPopup: NSPopUpButton!
     private var ollamaModelsTask: Task<Void, Never>?
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 480),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 540),
                               styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         window.title = "Ajustes de GlideBoard"
@@ -102,6 +105,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             self?.onFocusHotKeyChange?(code, mods)
         }
 
+        let dictationShortcutField = ShortcutField(keyCode: Settings.dictationHotKeyCode,
+                                                   carbonMods: Settings.dictationHotKeyModifiers)
+        dictationShortcutField.onChange = { [weak self] code, mods in
+            Settings.dictationHotKeyCode = code
+            Settings.dictationHotKeyModifiers = mods
+            self?.onDictationHotKeyChange?(code, mods)
+        }
+
         languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
         languagePopup.addItems(withTitles: ["Español", "English"])
         languagePopup.selectItem(at: Settings.language == .spanish ? 0 : 1)
@@ -129,6 +140,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ollamaModelPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
         ollamaModelPopup.isEnabled = false
 
+        dictationModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let dictationModels = [
+            ("Base — ligero", "base"),
+            ("Small — recomendado para evals", "small"),
+            ("Large v3 Turbo — máxima calidad", "large-v3-v20240930_626MB")
+        ]
+        for (title, value) in dictationModels {
+            dictationModelPopup.addItem(withTitle: title)
+            dictationModelPopup.lastItem?.representedObject = value
+        }
+        let selectedDictationIndex = dictationModels.firstIndex {
+            $0.1 == Settings.dictationModel
+        } ?? 1
+        dictationModelPopup.selectItem(at: selectedDictationIndex)
+        dictationModelPopup.target = self
+        dictationModelPopup.action = #selector(dictationModelChanged)
+
         hoverCheck = NSButton(checkboxWithTitle: "modo arrastre ∿ (toque inicia, toque termina)",
                               target: self, action: #selector(hoverGlideChanged(_:)))
         hoverCheck.state = Settings.hoverGlide ? .on : .off
@@ -144,12 +172,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let grid = NSGridView(views: [
             [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
             [makeLabel("Atajo escribir en borrador:"), focusShortcutField],
+            [makeLabel("Atajo dictado (mantener):"), dictationShortcutField],
             [makeLabel("Idioma:"), languagePopup],
             [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
             [makeLabel("Área de borrador:"), composerCheck],
             [makeLabel("Glide sin clic:"), hoverCheck],
             [makeLabel("Completado IA (✦):"), enginePopup],
             [makeLabel("Modelo de Ollama:"), ollamaModelPopup],
+            [makeLabel("Modelo de dictado:"), dictationModelPopup],
             [makeLabel("Contexto para instrucciones:"), surroundingCheck]
         ])
         grid.rowSpacing = 14
@@ -224,6 +254,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         guard let name = ollamaModelPopup.selectedItem?.representedObject as? String else { return }
         Settings.ollamaModel = name
         onCompletionEngineChange?()
+    }
+
+    @objc private func dictationModelChanged() {
+        guard let model = dictationModelPopup.selectedItem?.representedObject as? String else { return }
+        Settings.dictationModel = model
+        onDictationModelChange?()
     }
 
     private func reloadOllamaModels() {

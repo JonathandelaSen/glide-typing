@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, NSTextViewDelegate {
     private var panel: NSPanel!
     private var keyboardView: KeyboardView!
@@ -8,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var hotKey: HotKey?
     private var focusHotKey: HotKey?
     private var transformHotKey: HotKey?
+    private var dictationHotKey: HotKey?
+    private var dictationController: DictationController?
     /// Plan A: transform the selection of the focused app in place.
     private var transformer: TextTransformer?
     /// Claims the physical Tab key while a ghost is on screen, so the phrase
@@ -38,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var toggleMenuItem: NSMenuItem?
     private var focusMenuItem: NSMenuItem?
     private var transformMenuItem: NSMenuItem?
+    private var dictationMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
     private var targetPollTimer: Timer?
@@ -97,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   app.processIdentifier != selfPID else { return }
-            self?.lastExternalApp = app
+            Task { @MainActor [weak self] in self?.lastExternalApp = app }
         }
 
         buildPanel()
@@ -136,6 +140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         applyHotKey()
         applyFocusHotKey()
         applyTransformHotKey()
+        configureDictation()
+        applyDictationHotKey()
         applyCompletionEngine()
         showPanel()
         startTargetPolling()
@@ -145,15 +151,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     /// composer chip shows "copy" when there's nowhere to inject text.
     private func startTargetPolling() {
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self, self.panel.isVisible else { return }
-            // While we're mid-delivery the target app is being activated; don't
-            // fight that transient state.
-            guard !self.composerDeliveryInProgress else { return }
-            self.keyboardView.hasTextTarget =
-                FocusedFieldReader.textTargetStatus(in: self.lastExternalApp).canAttemptInsertion
+            Task { @MainActor [weak self] in self?.refreshTargetStatus() }
         }
         RunLoop.main.add(t, forMode: .common)
         targetPollTimer = t
+    }
+
+    private func refreshTargetStatus() {
+        guard panel.isVisible else { return }
+        // While we're mid-delivery the target app is being activated; don't
+        // fight that transient state.
+        guard !composerDeliveryInProgress else { return }
+        keyboardView.hasTextTarget =
+            FocusedFieldReader.textTargetStatus(in: lastExternalApp).canAttemptInsertion
     }
 
     private func requestAccessibilityIfNeeded() {
@@ -202,6 +212,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         }
     }
 
+    private func applyDictationHotKey() {
+        dictationHotKey = nil
+        dictationHotKey = HotKey(
+            id: 4,
+            keyCode: Settings.dictationHotKeyCode,
+            modifiers: Settings.dictationHotKeyModifiers,
+            pressed: { [weak self] in
+                Task { await self?.dictationController?.press() }
+            },
+            released: { [weak self] in
+                Task { await self?.dictationController?.release() }
+            }
+        )
+        refreshDictationMenuTitle()
+        if dictationHotKey == nil {
+            NSLog("GlideBoard: could not register dictation hotkey — it may be taken by another app")
+        }
+    }
+
+    private func configureDictation() {
+        dictationController?.cancel()
+        let engine = WhisperKitDictationEngine(model: Settings.dictationModel)
+        dictationController = DictationController(
+            engine: engine,
+            language: { [weak self] in self?.language == .english ? "en" : "es" },
+            output: { [weak self] transcript in self?.emitDictationTranscript(transcript) },
+            stateChanged: { [weak self] state in self?.dictationStateChanged(state) }
+        )
+    }
+
+    private func emitDictationTranscript(_ transcript: String) {
+        let existingText = composerEnabled ? composerText : recentText
+        let insertion = DictationInsertion.text(transcript: transcript,
+                                                existingText: existingText)
+        guard !insertion.isEmpty else { return }
+        emitText(insertion)
+        keyboardView.flash("Dictado listo")
+        requestCompletion()
+    }
+
+    private func dictationStateChanged(_ state: DictationState) {
+        keyboardView?.dictationState = state
+        refreshDictationMenuTitle()
+        switch state {
+        case .idle:
+            statusItem.button?.title = "⌨︎"
+        case .preparing:
+            statusItem.button?.title = "◉"
+            keyboardView.flash("Preparando micrófono…")
+        case .recording:
+            statusItem.button?.title = "●"
+            keyboardView.flash("Dictando… suelta para transcribir")
+        case .transcribing:
+            statusItem.button?.title = "…"
+            keyboardView.flash("WhisperKit está transcribiendo…")
+        case .failed(let message):
+            statusItem.button?.title = "⌨︎"
+            keyboardView.flash(message)
+            NSLog("GlideBoard dictation: %@", message)
+        }
+    }
+
+    private func refreshDictationMenuTitle() {
+        let shortcut = shortcutDescription(keyCode: Settings.dictationHotKeyCode,
+                                           modifiers: Settings.dictationHotKeyModifiers)
+        switch dictationController?.state {
+        case .preparing, .recording:
+            dictationMenuItem?.title = "Terminar dictado"
+        case .transcribing:
+            dictationMenuItem?.title = "Transcribiendo con WhisperKit…"
+        default:
+            dictationMenuItem?.title = "Mantén para dictar (\(shortcut))"
+        }
+    }
+
     // MARK: - Panel
 
     private func buildPanel() {
@@ -209,6 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         keyboardView.delegate = self
         keyboardView.hoverGlideEnabled = Settings.hoverGlide
         keyboardView.composerEnabled = composerEnabled
+        keyboardView.dictationState = dictationController?.state ?? .idle
         keyboardView.composerView.delegate = self
 
         let size = keyboardView.frame.size
@@ -705,6 +791,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         transform.target = self
         menu.addItem(transform)
         transformMenuItem = transform
+        let dictation = NSMenuItem(title: "Mantén para dictar", action: #selector(menuDictation),
+                                   keyEquivalent: "")
+        dictation.target = self
+        menu.addItem(dictation)
+        dictationMenuItem = dictation
+        refreshDictationMenuTitle()
         menu.addItem(.separator())
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
@@ -733,6 +825,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     @objc private func menuToggle() { togglePanel() }
     @objc private func menuFocusComposer() { focusComposerInput() }
     @objc private func menuTransform() { transformer?.begin() }
+    @objc private func menuDictation() {
+        toggleDictation()
+    }
+
+    private func toggleDictation() {
+        guard let dictationController else { return }
+        Task {
+            switch dictationController.state {
+            case .preparing, .recording:
+                await dictationController.release()
+            case .idle, .failed:
+                await dictationController.press()
+            case .transcribing:
+                break
+            }
+        }
+    }
     @objc private func setSpanish() { switchLanguage(.spanish) }
     @objc private func setEnglish() { switchLanguage(.english) }
 
@@ -787,6 +896,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             let controller = SettingsWindowController()
             controller.onHotKeyChange = { [weak self] _, _ in self?.applyHotKey() }
             controller.onFocusHotKeyChange = { [weak self] _, _ in self?.applyFocusHotKey() }
+            controller.onDictationHotKeyChange = { [weak self] _, _ in self?.applyDictationHotKey() }
+            controller.onDictationModelChange = { [weak self] in self?.configureDictation() }
             controller.onLanguageChange = { [weak self] lang in self?.switchLanguage(lang) }
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
             controller.onCompletionEngineChange = { [weak self] in self?.applyCompletionEngine() }
@@ -840,6 +951,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
 
     func keyboardViewDidToggleHistory(_ view: KeyboardView) {
         openHistory()
+    }
+
+    func keyboardViewDidToggleDictation(_ view: KeyboardView) {
+        toggleDictation()
     }
 
     func keyboardView(_ view: KeyboardView, didRepeatBackspaceByWord byWord: Bool) {

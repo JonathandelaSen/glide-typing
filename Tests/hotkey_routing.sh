@@ -15,6 +15,9 @@ let other = EventHotKeyID(signature: signature, id: 2)
 
 precondition(hotKeyRoutingResult(registered: registered, pressed: same) == noErr)
 precondition(hotKeyRoutingResult(registered: registered, pressed: other) == eventNotHandledErr)
+precondition(hotKeyPhase(eventKind: UInt32(kEventHotKeyPressed)) == .pressed)
+precondition(hotKeyPhase(eventKind: UInt32(kEventHotKeyReleased)) == .released)
+precondition(hotKeyPhase(eventKind: UInt32(kEventRawKeyDown)) == nil)
 SWIFT
 
 swiftc \
