@@ -1,6 +1,5 @@
-import XCTest
 import AppKit
-@testable import GlideBoard
+@testable import GlideBoardCore
 
 /// Minimal delegate that records the keys forwarded by the view, to verify
 /// which taps reach the app and which are absorbed as layout changes.
@@ -26,65 +25,64 @@ private final class TapSpy: NSObject, KeyboardViewDelegate {
     func keyboardViewDidToggleDictation(_ view: KeyboardView) {}
 }
 
-final class KeyboardLayerTests: XCTestCase {
+@MainActor
+func keyboardLayerChecks() async {
+    let c = Checks.shared
+    c.begin("Keyboard layers")
 
-    private func chars(in layout: KeyboardLayout) -> Set<Character> {
+    func chars(in layout: KeyboardLayout) -> Set<Character> {
         Set(layout.keys.compactMap {
-            if case .char(let c) = $0.action { return c }
+            if case .char(let ch) = $0.action { return ch }
             return nil
         })
     }
 
-    private func key(_ action: KeyAction, in layout: KeyboardLayout) -> Key? {
+    func key(_ action: KeyAction, in layout: KeyboardLayout) -> Key? {
         layout.keys.first { $0.action == action }
     }
 
-    // MARK: - Layout building
-
-    func testLettersLayerHasLayerSwitchesAndShift() {
+    await c.test("letters layer has layer switches, shift and ñ") {
         let layout = KeyboardLayout.build(for: .spanish)
-        XCTAssertNotNil(key(.shift, in: layout))
-        XCTAssertNotNil(key(.layer(.symbols), in: layout))
-        XCTAssertNotNil(key(.layer(.emoji), in: layout))
-        XCTAssertTrue(chars(in: layout).contains("ñ"))
+        _ = try unwrap(key(.shift, in: layout))
+        _ = try unwrap(key(.layer(.symbols), in: layout))
+        _ = try unwrap(key(.layer(.emoji), in: layout))
+        try expectTrue(chars(in: layout).contains("ñ"))
     }
 
-    func testShiftUppercasesLetters() {
+    await c.test("shift uppercases letters but not digits") {
         var state = LayoutState()
         state.shift = .on
-        let layout = KeyboardLayout.build(for: .spanish, state: state)
-        let set = chars(in: layout)
-        XCTAssertTrue(set.contains("Q"))
-        XCTAssertTrue(set.contains("Ñ"))
-        XCTAssertFalse(set.contains("q"))
-        // Digits are unaffected by shift.
-        XCTAssertTrue(set.contains("1"))
+        let set = chars(in: KeyboardLayout.build(for: .spanish, state: state))
+        try expectTrue(set.contains("Q"))
+        try expectTrue(set.contains("Ñ"))
+        try expectFalse(set.contains("q"))
+        try expectTrue(set.contains("1"))
     }
 
-    func testSymbolsLayerCoversEmailAndURLCharacters() {
+    await c.test("symbols layer covers email and URL characters") {
         var state = LayoutState()
         state.layer = .symbols
         let layout = KeyboardLayout.build(for: .spanish, state: state)
         let set = chars(in: layout)
         for needed: Character in ["@", "/", ":", "-", "_", "€", "¿", "¡"] {
-            XCTAssertTrue(set.contains(needed), "missing \(needed)")
+            try expectTrue(set.contains(needed), "missing \(needed)")
         }
-        XCTAssertNotNil(key(.tab, in: layout))
-        XCTAssertNotNil(key(.escape, in: layout))
-        XCTAssertNotNil(key(.arrow(.left), in: layout))
-        XCTAssertNotNil(key(.symbolsPage(1), in: layout))
+        _ = try unwrap(key(.tab, in: layout))
+        _ = try unwrap(key(.escape, in: layout))
+        _ = try unwrap(key(.arrow(.left), in: layout))
+        _ = try unwrap(key(.symbolsPage(1), in: layout))
     }
 
-    func testSymbolsSecondPage() {
+    await c.test("symbols second page exists and links back") {
         var state = LayoutState()
         state.layer = .symbols
         state.symbolsPage = 1
         let layout = KeyboardLayout.build(for: .spanish, state: state)
-        XCTAssertTrue(chars(in: layout).contains("«"))
-        XCTAssertNotNil(key(.symbolsPage(0), in: layout))
+        try expectTrue(chars(in: layout).contains("«"))
+        _ = try unwrap(key(.symbolsPage(0), in: layout))
     }
 
-    func testEmojiLayerGrid() {
+    await c.test("emoji layer builds its grid with tabs and controls") {
         var state = LayoutState()
         state.layer = .emoji
         state.emojiCategory = 1 // first fixed category (recents may be empty)
@@ -93,19 +91,19 @@ final class KeyboardLayerTests: XCTestCase {
             if case .emojiCategory = $0.action { return true }
             return false
         }
-        XCTAssertEqual(tabs.count, EmojiCatalog.categoryCount)
+        try expectEqual(tabs.count, EmojiCatalog.categoryCount)
         let emojis = layout.keys.filter {
             if case .text = $0.action { return true }
             return false
         }
-        XCTAssertFalse(emojis.isEmpty)
-        XCTAssertLessThanOrEqual(emojis.count, EmojiCatalog.perPage)
-        XCTAssertNotNil(key(.backspace, in: layout))
-        XCTAssertNotNil(key(.ret, in: layout))
-        XCTAssertNotNil(key(.layer(.letters), in: layout))
+        try expectFalse(emojis.isEmpty)
+        try expectTrue(emojis.count <= EmojiCatalog.perPage)
+        _ = try unwrap(key(.backspace, in: layout))
+        _ = try unwrap(key(.ret, in: layout))
+        _ = try unwrap(key(.layer(.letters), in: layout))
     }
 
-    func testAllLayersFitTheGrid() {
+    await c.test("every layer fits the unit grid in both languages") {
         var states: [LayoutState] = [LayoutState()]
         var shifted = LayoutState(); shifted.shift = .capsLock
         states.append(shifted)
@@ -120,107 +118,93 @@ final class KeyboardLayerTests: XCTestCase {
             for language in [Language.spanish, .english] {
                 let layout = KeyboardLayout.build(for: language, state: state)
                 for key in layout.keys {
-                    XCTAssertGreaterThanOrEqual(key.unitFrame.minX, -0.001)
-                    XCTAssertGreaterThanOrEqual(key.unitFrame.minY, -0.001)
-                    XCTAssertLessThanOrEqual(key.unitFrame.maxX, layout.unitColumns + 0.001,
-                                             "\(key.label) overflows in \(state)")
-                    XCTAssertLessThanOrEqual(key.unitFrame.maxY, layout.unitRows + 0.001)
+                    try expectTrue(key.unitFrame.minX >= -0.001)
+                    try expectTrue(key.unitFrame.minY >= -0.001)
+                    try expectTrue(key.unitFrame.maxX <= layout.unitColumns + 0.001,
+                                   "\(key.label) overflows in \(state)")
+                    try expectTrue(key.unitFrame.maxY <= layout.unitRows + 0.001)
                 }
             }
         }
     }
 
-    func testVowelAlternatesCarryAccents() {
+    await c.test("vowel alternates carry accents in both cases") {
         let layout = KeyboardLayout.build(for: .spanish)
         let a = layout.keys.first { $0.action == .char("a") }
-        XCTAssertTrue(a?.alternates.contains("á") ?? false)
+        try expectTrue(a?.alternates.contains("á") ?? false)
 
         var state = LayoutState(); state.shift = .on
         let shifted = KeyboardLayout.build(for: .spanish, state: state)
         let upperA = shifted.keys.first { $0.action == .char("A") }
-        XCTAssertTrue(upperA?.alternates.contains("Á") ?? false)
+        try expectTrue(upperA?.alternates.contains("Á") ?? false)
     }
 
-    // MARK: - View state machine
-
-    @MainActor
-    func testLayerSwitchIsAbsorbedByTheView() {
+    await c.test("layer switches are absorbed by the view") {
         let view = KeyboardView(language: .spanish)
         let spy = TapSpy()
         view.delegate = spy
-
         view.dispatchTap(Key(action: .layer(.symbols), label: "", unitFrame: .zero))
-        XCTAssertEqual(view.state.layer, .symbols)
+        try expectEqual(view.state.layer, .symbols)
         view.dispatchTap(Key(action: .layer(.letters), label: "", unitFrame: .zero))
-        XCTAssertEqual(view.state.layer, .letters)
-        XCTAssertTrue(spy.taps.isEmpty, "layout actions must not reach the delegate")
+        try expectEqual(view.state.layer, .letters)
+        try expectTrue(spy.taps.isEmpty, "layout actions must not reach the delegate")
     }
 
-    @MainActor
-    func testOneShotShiftIsConsumedByALetter() {
+    await c.test("one-shot shift is consumed by a letter") {
         let view = KeyboardView(language: .spanish)
         let spy = TapSpy()
         view.delegate = spy
-
         view.dispatchTap(Key(action: .shift, label: "", unitFrame: .zero))
-        XCTAssertEqual(view.shiftState, .on)
-        // The shifted layout carries uppercase keys.
-        XCTAssertTrue(view.layout.keys.contains { $0.action == .char("Q") })
-
+        try expectEqual(view.shiftState, .on)
+        try expectTrue(view.layout.keys.contains { $0.action == .char("Q") })
         view.dispatchTap(Key(action: .char("Q"), label: "Q", unitFrame: .zero))
-        XCTAssertEqual(spy.taps, [.char("Q")])
-        XCTAssertEqual(view.shiftState, .off)
-        XCTAssertTrue(view.layout.keys.contains { $0.action == .char("q") })
+        try expectEqual(spy.taps, [.char("Q")])
+        try expectEqual(view.shiftState, .off)
+        try expectTrue(view.layout.keys.contains { $0.action == .char("q") })
     }
 
-    @MainActor
-    func testDoubleTapShiftEngagesCapsLock() {
+    await c.test("double-tap shift engages caps lock") {
         let view = KeyboardView(language: .spanish)
         view.dispatchTap(Key(action: .shift, label: "", unitFrame: .zero))
         view.dispatchTap(Key(action: .shift, label: "", unitFrame: .zero))
-        XCTAssertEqual(view.shiftState, .capsLock)
-        // Caps lock survives letters and only a further tap clears it.
+        try expectEqual(view.shiftState, .capsLock)
         view.dispatchTap(Key(action: .char("A"), label: "A", unitFrame: .zero))
-        XCTAssertEqual(view.shiftState, .capsLock)
+        try expectEqual(view.shiftState, .capsLock, "caps lock survives letters")
     }
 
-    @MainActor
-    func testAutoShiftNeverLowersAManualShift() {
+    await c.test("auto shift never lowers a manual shift") {
         let view = KeyboardView(language: .spanish)
         view.dispatchTap(Key(action: .shift, label: "", unitFrame: .zero))
         view.setAutoShift(false)
-        XCTAssertEqual(view.shiftState, .on, "manual shift must survive auto-lowering")
+        try expectEqual(view.shiftState, .on, "manual shift must survive auto-lowering")
         view.setAutoShift(true) // no-op: already on
         view.consumeShift()
-        XCTAssertEqual(view.shiftState, .off)
+        try expectEqual(view.shiftState, .off)
         view.setAutoShift(true)
-        XCTAssertEqual(view.shiftState, .on)
+        try expectEqual(view.shiftState, .on)
         view.setAutoShift(false)
-        XCTAssertEqual(view.shiftState, .off, "auto shift lowers what it raised")
+        try expectEqual(view.shiftState, .off, "auto shift lowers what it raised")
     }
 
-    // MARK: - Emoji catalog
-
-    func testEmojiCatalogPaging() {
+    await c.test("emoji catalog pages stay within the grid and clamp") {
         for category in 0..<EmojiCatalog.categoryCount {
             let pages = EmojiCatalog.pageCount(category: category)
-            XCTAssertGreaterThanOrEqual(pages, 1)
+            try expectTrue(pages >= 1)
             for page in 0..<pages {
-                XCTAssertLessThanOrEqual(
-                    EmojiCatalog.page(category: category, page: page).count,
-                    EmojiCatalog.perPage)
+                try expectTrue(EmojiCatalog.page(category: category, page: page).count
+                               <= EmojiCatalog.perPage)
             }
         }
-        // Out-of-range requests clamp instead of crashing.
-        XCTAssertFalse(EmojiCatalog.page(category: 999, page: 999).isEmpty)
+        try expectFalse(EmojiCatalog.page(category: 999, page: 999).isEmpty,
+                        "out-of-range requests clamp instead of crashing")
     }
 
-    func testEmojiRecentsMoveToFront() {
+    await c.test("emoji recents move to the front without duplicates") {
         EmojiCatalog.recordRecent("🎉")
         EmojiCatalog.recordRecent("🚀")
-        XCTAssertEqual(EmojiCatalog.recents.first, "🚀")
+        try expectEqual(EmojiCatalog.recents.first, "🚀")
         EmojiCatalog.recordRecent("🎉")
-        XCTAssertEqual(EmojiCatalog.recents.first, "🎉")
-        XCTAssertEqual(EmojiCatalog.recents.filter { $0 == "🎉" }.count, 1)
+        try expectEqual(EmojiCatalog.recents.first, "🎉")
+        try expectEqual(EmojiCatalog.recents.filter { $0 == "🎉" }.count, 1)
     }
 }

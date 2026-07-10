@@ -57,9 +57,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onFocusHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationHotKeyChange: ((UInt32, UInt32) -> Void)?
+    var onTransformHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationModelChange: (() -> Void)?
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
+    var onOpacityChange: ((Double) -> Void)?
     var onCompletionEngineChange: (() -> Void)?
     var onHoverGlideChange: ((Bool) -> Void)?
     var onComposerModeChange: ((Bool) -> Void)?
@@ -68,14 +70,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var hoverCheck: NSButton!
 
     private var scaleLabel: NSTextField!
+    private var opacityLabel: NSTextField!
     private var languagePopup: NSPopUpButton!
     private var enginePopup: NSPopUpButton!
     private var ollamaModelPopup: NSPopUpButton!
     private var dictationModelPopup: NSPopUpButton!
+    private var dictationLanguagePopup: NSPopUpButton!
     private var ollamaModelsTask: Task<Void, Never>?
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 540),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 570),
                               styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         window.title = "Ajustes de GlideBoard"
@@ -113,6 +117,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             self?.onDictationHotKeyChange?(code, mods)
         }
 
+        let transformShortcutField = ShortcutField(keyCode: Settings.transformHotKeyCode,
+                                                   carbonMods: Settings.transformHotKeyModifiers)
+        transformShortcutField.onChange = { [weak self] code, mods in
+            Settings.transformHotKeyCode = code
+            Settings.transformHotKeyModifiers = mods
+            self?.onTransformHotKeyChange?(code, mods)
+        }
+
         languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
         languagePopup.addItems(withTitles: ["Español", "English"])
         languagePopup.selectItem(at: Settings.language == .spanish ? 0 : 1)
@@ -125,6 +137,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         slider.widthAnchor.constraint(equalToConstant: 180).isActive = true
 
         scaleLabel = makeLabel(scaleText(Settings.scale))
+
+        // Live preview while dragging: updating the panel's alphaValue is
+        // cheap, unlike scale which rebuilds the panel.
+        let opacitySlider = NSSlider(value: Settings.opacity, minValue: 0.3, maxValue: 1.0,
+                                     target: self, action: #selector(opacityChanged(_:)))
+        opacitySlider.isContinuous = true
+        opacitySlider.widthAnchor.constraint(equalToConstant: 180).isActive = true
+
+        opacityLabel = makeLabel(scaleText(Settings.opacity))
 
         enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
         enginePopup.addItems(withTitles: ["Apple (sistema)", "Ollama (localhost)", "Desactivado"])
@@ -143,7 +164,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         dictationModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         let dictationModels = [
             ("Base — ligero", "base"),
-            ("Small — recomendado para evals", "small"),
+            ("Small — equilibrado", "small"),
             ("Large v3 Turbo — máxima calidad", "large-v3-v20240930_626MB")
         ]
         for (title, value) in dictationModels {
@@ -156,6 +177,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         dictationModelPopup.selectItem(at: selectedDictationIndex)
         dictationModelPopup.target = self
         dictationModelPopup.action = #selector(dictationModelChanged)
+
+        dictationLanguagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let dictationLanguages: [(String, DictationLanguage)] = [
+            ("Automático — detecta al hablar", .automatic),
+            ("Español", .spanish),
+            ("English", .english)
+        ]
+        for (title, value) in dictationLanguages {
+            dictationLanguagePopup.addItem(withTitle: title)
+            dictationLanguagePopup.lastItem?.representedObject = value.rawValue
+        }
+        let selectedDictationLanguage = dictationLanguages.firstIndex {
+            $0.1 == Settings.dictationLanguage
+        } ?? 0
+        dictationLanguagePopup.selectItem(at: selectedDictationLanguage)
+        dictationLanguagePopup.target = self
+        dictationLanguagePopup.action = #selector(dictationLanguageChanged)
 
         hoverCheck = NSButton(checkboxWithTitle: "modo arrastre ∿ (toque inicia, toque termina)",
                               target: self, action: #selector(hoverGlideChanged(_:)))
@@ -173,13 +211,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
             [makeLabel("Atajo escribir en borrador:"), focusShortcutField],
             [makeLabel("Atajo dictado (mantener):"), dictationShortcutField],
+            [makeLabel("Atajo transformar/instrucción:"), transformShortcutField],
             [makeLabel("Idioma:"), languagePopup],
             [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
+            [makeLabel("Opacidad del teclado:"), opacitySlider, opacityLabel],
             [makeLabel("Área de borrador:"), composerCheck],
             [makeLabel("Glide sin clic:"), hoverCheck],
             [makeLabel("Completado IA (✦):"), enginePopup],
             [makeLabel("Modelo de Ollama:"), ollamaModelPopup],
             [makeLabel("Modelo de dictado:"), dictationModelPopup],
+            [makeLabel("Idioma del dictado:"), dictationLanguagePopup],
             [makeLabel("Contexto para instrucciones:"), surroundingCheck]
         ])
         grid.rowSpacing = 14
@@ -262,6 +303,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         onDictationModelChange?()
     }
 
+    @objc private func dictationLanguageChanged() {
+        guard let rawValue = dictationLanguagePopup.selectedItem?.representedObject as? String,
+              let language = DictationLanguage(rawValue: rawValue) else { return }
+        Settings.dictationLanguage = language
+    }
+
     private func reloadOllamaModels() {
         ollamaModelsTask?.cancel()
         ollamaModelPopup.removeAllItems()
@@ -334,6 +381,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         Settings.scale = v
         scaleLabel.stringValue = scaleText(v)
         onScaleChange?(v)
+    }
+
+    @objc private func opacityChanged(_ sender: NSSlider) {
+        let v = (sender.doubleValue * 20).rounded() / 20 // steps of 0.05
+        Settings.opacity = v
+        opacityLabel.stringValue = scaleText(v)
+        onOpacityChange?(v)
     }
 
     /// Keep the popup in sync when the language is changed from the keyboard itself.

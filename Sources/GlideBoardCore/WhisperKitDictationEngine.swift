@@ -18,6 +18,24 @@ enum WhisperKitDictationError: LocalizedError {
     }
 }
 
+enum DictationDecoding {
+    /// Keep the safe WhisperKit fallback thresholds, enable language detection
+    /// only when the user opted into it, and split long recordings around
+    /// silence so pauses do not contaminate a whole 30-second decoding window.
+    static func options(language: String?) -> DecodingOptions {
+        DecodingOptions(
+            task: .transcribe,
+            language: language,
+            temperature: 0,
+            usePrefillPrompt: true,
+            detectLanguage: language == nil,
+            skipSpecialTokens: true,
+            withoutTimestamps: true,
+            chunkingStrategy: .vad
+        )
+    }
+}
+
 /// Local, on-device speech-to-text. Audio capture starts without waiting for
 /// the model; the selected Core ML model is downloaded and loaded only after
 /// the first recording is complete, so initial setup never loses spoken audio.
@@ -38,10 +56,12 @@ final class WhisperKitDictationEngine: DictationEngine {
         guard await AudioProcessor.requestRecordPermission() else {
             throw WhisperKitDictationError.microphonePermissionDenied
         }
-        try audioProcessor.startRecordingLive(inputDeviceID: inputDevices[0].id, callback: nil)
+        // Passing nil intentionally uses macOS's selected input. The first
+        // device Core Audio enumerates may be a webcam or disconnected dock.
+        try audioProcessor.startRecordingLive(inputDeviceID: nil, callback: nil)
     }
 
-    func stopRecordingAndTranscribe(language: String) async throws -> String {
+    func stopRecordingAndTranscribe(language: String?) async throws -> String {
         audioProcessor.stopRecording()
         let samples = Array(audioProcessor.audioSamples)
         guard samples.count >= Self.minimumSamples else {
@@ -49,15 +69,7 @@ final class WhisperKitDictationEngine: DictationEngine {
         }
 
         let whisperKit = try await loadPipeline()
-        let options = DecodingOptions(
-            task: .transcribe,
-            language: language,
-            temperature: 0,
-            usePrefillPrompt: true,
-            detectLanguage: false,
-            skipSpecialTokens: true,
-            withoutTimestamps: true
-        )
+        let options = DictationDecoding.options(language: language)
         let results = try await whisperKit.transcribe(audioArray: samples,
                                                       decodeOptions: options)
         let text = results

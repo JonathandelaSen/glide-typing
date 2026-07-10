@@ -1,6 +1,18 @@
 import AppKit
 import Carbon
 
+enum DictationLanguage: String, CaseIterable {
+    case automatic = "auto"
+    case spanish = "es"
+    case english = "en"
+
+    /// `nil` asks WhisperKit to identify the spoken language rather than
+    /// coupling dictation to the keyboard's visual ES/EN layout.
+    var whisperLanguage: String? {
+        self == .automatic ? nil : rawValue
+    }
+}
+
 enum Settings {
     private static let defaults = UserDefaults.standard
 
@@ -58,6 +70,13 @@ enum Settings {
     static var dictationModel: String {
         get { defaults.string(forKey: "dictationModel") ?? "small" }
         set { defaults.set(newValue, forKey: "dictationModel") }
+    }
+
+    /// Spoken language is independent from the keyboard layout. Automatic is
+    /// the useful default for bilingual dictation and pasted technical terms.
+    static var dictationLanguage: DictationLanguage {
+        get { DictationLanguage(rawValue: defaults.string(forKey: "dictationLanguage") ?? "") ?? .automatic }
+        set { defaults.set(newValue.rawValue, forKey: "dictationLanguage") }
     }
 
     /// Plan B: opt-in to reading visible text around the focused field (AX)
@@ -119,6 +138,15 @@ enum Settings {
             return v == 0 ? 1.0 : min(max(v, 0.7), 1.6)
         }
         set { defaults.set(newValue, forKey: "scale") }
+    }
+
+    /// Keyboard panel opacity (0.3–1.0).
+    static var opacity: Double {
+        get {
+            let v = defaults.double(forKey: "opacity")
+            return v == 0 ? 1.0 : min(max(v, 0.3), 1.0)
+        }
+        set { defaults.set(newValue, forKey: "opacity") }
     }
 }
 

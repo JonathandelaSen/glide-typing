@@ -43,9 +43,12 @@ final class PersonalWordModel {
     private var counts: [String: Double] = [:]
     private let url: URL
 
-    init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GlideBoard", isDirectory: true)
+    /// `directory` overrides the Application Support location (tests use a
+    /// temporary folder so runs never touch — or depend on — real user data).
+    init(directory: URL? = nil) {
+        let support = directory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("GlideBoard", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         url = support.appendingPathComponent("personal_words.json")
         if let data = try? Data(contentsOf: url),

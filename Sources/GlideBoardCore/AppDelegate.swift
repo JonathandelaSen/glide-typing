@@ -2,7 +2,9 @@ import AppKit
 import Carbon
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, NSTextViewDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, NSTextViewDelegate {
+    public override init() { super.init() }
+
     private var panel: NSPanel!
     private var keyboardView: KeyboardView!
     private var statusItem: NSStatusItem!
@@ -81,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     private var completionProvider: CompletionProvider?
     private var completionTask: Task<Void, Never>?
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         requestAccessibilityIfNeeded()
 
@@ -239,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         let engine = WhisperKitDictationEngine(model: Settings.dictationModel)
         dictationController = DictationController(
             engine: engine,
-            language: { [weak self] in self?.language == .english ? "en" : "es" },
+            language: { Settings.dictationLanguage.whisperLanguage },
             output: { [weak self] transcript in self?.emitDictationTranscript(transcript) },
             stateChanged: { [weak self] state in self?.dictationStateChanged(state) }
         )
@@ -314,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        panel.alphaValue = Settings.opacity
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = keyboardView
@@ -735,7 +738,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
     // (clicking to move the caret, selecting, even typing with the physical
     // keyboard — the panel takes key status without activating the app).
 
-    func textDidChange(_ notification: Notification) {
+    public func textDidChange(_ notification: Notification) {
         guard composerEnabled, !keyboardView.composerProgrammatic else { return }
         keyboardView.composerContentChanged()
         resetWordState()
@@ -763,7 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
         updateAutoShift()
     }
 
-    func textViewDidChangeSelection(_ notification: Notification) {
+    public func textViewDidChangeSelection(_ notification: Notification) {
         guard composerEnabled, !keyboardView.composerProgrammatic else { return }
         resetWordState()
         syncWordStateFromComposer()
@@ -947,9 +950,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDelegate, 
             controller.onHotKeyChange = { [weak self] _, _ in self?.applyHotKey() }
             controller.onFocusHotKeyChange = { [weak self] _, _ in self?.applyFocusHotKey() }
             controller.onDictationHotKeyChange = { [weak self] _, _ in self?.applyDictationHotKey() }
+            controller.onTransformHotKeyChange = { [weak self] _, _ in self?.applyTransformHotKey() }
             controller.onDictationModelChange = { [weak self] in self?.configureDictation() }
             controller.onLanguageChange = { [weak self] lang in self?.switchLanguage(lang) }
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
+            controller.onOpacityChange = { [weak self] value in self?.panel.alphaValue = value }
             controller.onCompletionEngineChange = { [weak self] in self?.applyCompletionEngine() }
             controller.onHoverGlideChange = { [weak self] enabled in self?.keyboardView.hoverGlideEnabled = enabled }
             controller.onComposerModeChange = { [weak self] enabled in

@@ -1,4 +1,5 @@
 import AppKit
+import GlideBoardCore
 
 MainActor.assumeIsolated {
     let app = NSApplication.shared

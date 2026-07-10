@@ -34,9 +34,12 @@ final class PhraseMemory {
         var counts: [String: [String: Double]]
     }
 
-    init(language: Language) {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GlideBoard", isDirectory: true)
+    /// `directory` overrides the Application Support location (tests use a
+    /// temporary folder so runs never touch — or depend on — real user data).
+    init(language: Language, directory: URL? = nil) {
+        let support = directory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("GlideBoard", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         url = support.appendingPathComponent("phrase_memory_\(language.rawValue).json")
 

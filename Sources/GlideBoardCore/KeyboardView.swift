@@ -1317,12 +1317,7 @@ final class KeyboardView: NSView {
         let panel = NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14)
         panel.fill()
 
-        // Drag handle, centered in the toolbar strip.
-        NSColor(calibratedWhite: 0.45, alpha: 1).setFill()
-        let handle = NSBezierPath(roundedRect: CGRect(x: bounds.midX - 26, y: (barHeight - 5) / 2,
-                                                      width: 52, height: 5),
-                                  xRadius: 2.5, yRadius: 2.5)
-        handle.fill()
+        drawToolbarCenter()
 
         drawCandidates()
 
@@ -1370,6 +1365,41 @@ final class KeyboardView: NSView {
         let s = NSAttributedString(string: symbol, attributes: attrs)
         let size = s.size()
         s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+    }
+
+    /// The old transient flash disappeared after 0.45 s. Dictation needs a
+    /// continuously visible state, while idle keeps the familiar drag handle.
+    private func drawToolbarCenter() {
+        guard let status = dictationState.statusText else {
+            NSColor(calibratedWhite: 0.45, alpha: 1).setFill()
+            let handle = NSBezierPath(roundedRect: CGRect(x: bounds.midX - 26,
+                                                          y: (barHeight - 5) / 2,
+                                                          width: 52, height: 5),
+                                      xRadius: 2.5, yRadius: 2.5)
+            handle.fill()
+            return
+        }
+
+        let left = dictationButtonRect.maxX + 10 * uiScale
+        let right = historyButtonRect.minX - 10 * uiScale
+        guard right > left else { return }
+        let rect = CGRect(x: left, y: 4 * uiScale, width: right - left,
+                          height: barHeight - 8 * uiScale)
+        let color: NSColor = {
+            if case .recording = dictationState {
+                return NSColor(calibratedRed: 0.44, green: 0.14, blue: 0.17, alpha: 1)
+            }
+            return NSColor(calibratedRed: 0.2, green: 0.3, blue: 0.44, alpha: 1)
+        }()
+        color.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11 * uiScale, weight: .semibold),
+            .foregroundColor: NSColor.white
+        ]
+        let text = NSAttributedString(string: status, attributes: attributes)
+        let size = text.size()
+        text.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
     }
 
     private func drawModeButton() {

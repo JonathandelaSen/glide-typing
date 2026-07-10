@@ -3,7 +3,8 @@
 set -e
 cd "$(dirname "$0")"
 
-swift build -c release
+# Only the app product: the checks runner (@testable) needs a debug build.
+swift build -c release --product GlideBoard
 
 APP=build/GlideBoard.app
 rm -rf "$APP"

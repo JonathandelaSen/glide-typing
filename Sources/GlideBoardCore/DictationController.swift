@@ -2,7 +2,7 @@ import Foundation
 
 protocol DictationEngine: AnyObject {
     func startRecording() async throws
-    func stopRecordingAndTranscribe(language: String) async throws -> String
+    func stopRecordingAndTranscribe(language: String?) async throws -> String
     func cancelRecording()
 }
 
@@ -12,6 +12,17 @@ enum DictationState: Equatable {
     case recording
     case transcribing
     case failed(String)
+
+    /// Persistent feedback for the only states where the user has to wait or
+    /// perform an action. A short flash is too easy to miss while dictating.
+    var statusText: String? {
+        switch self {
+        case .preparing: "Preparando micrófono…"
+        case .recording: "Grabando · termina con el atajo o 🎙"
+        case .transcribing: "Transcribiendo localmente…"
+        case .idle, .failed: nil
+        }
+    }
 }
 
 enum DictationInsertion {
@@ -26,7 +37,7 @@ enum DictationInsertion {
 @MainActor
 final class DictationController {
     private let engine: DictationEngine
-    private let language: () -> String
+    private let language: () -> String?
     private let output: (String) -> Void
     private let stateChanged: (DictationState) -> Void
     private var releaseRequested = false
@@ -36,7 +47,7 @@ final class DictationController {
     }
 
     init(engine: DictationEngine,
-         language: @escaping () -> String,
+         language: @escaping () -> String?,
          output: @escaping (String) -> Void,
          stateChanged: @escaping (DictationState) -> Void)
     {
