@@ -12,6 +12,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private var focusHotKey: HotKey?
     private var transformHotKey: HotKey?
     private var dictationHotKey: HotKey?
+    private var sendHotKey: HotKey?
     private var dictationController: DictationController?
     private lazy var dictationOverlay = DictationOverlay()
     /// Captured before the mic starts. It must never be recalculated from the
@@ -51,6 +52,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private var focusMenuItem: NSMenuItem?
     private var transformMenuItem: NSMenuItem?
     private var dictationMenuItem: NSMenuItem?
+    private var sendMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
     private var targetPollTimer: Timer?
@@ -153,6 +155,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         applyHotKey()
         applyFocusHotKey()
         applyTransformHotKey()
+        applySendHotKey()
         configureDictation()
         applyDictationHotKey()
         applyCompletionEngine()
@@ -223,6 +226,34 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         if transformHotKey == nil {
             NSLog("GlideBoard: could not register transform hotkey — it may be taken by another app")
         }
+    }
+
+    private func applySendHotKey() {
+        sendHotKey = nil
+        sendHotKey = HotKey(id: 5,
+                            keyCode: Settings.sendHotKeyCode,
+                            modifiers: Settings.sendHotKeyModifiers) { [weak self] in
+            self?.sendComposerFromHotKey()
+        }
+        sendMenuItem?.title = "Enviar el borrador (\(shortcutDescription(keyCode: Settings.sendHotKeyCode, modifiers: Settings.sendHotKeyModifiers)))"
+        if sendHotKey == nil {
+            NSLog("GlideBoard: could not register send hotkey — it may be taken by another app")
+        }
+    }
+
+    /// Global send command: deliver the composer draft to the focused app
+    /// without touching the mouse, from anywhere.
+    private func sendComposerFromHotKey() {
+        guard composerEnabled, !composerText.isEmpty else {
+            if panel.isVisible {
+                keyboardView.flash(composerEnabled ? "Nada que enviar" : "Activa el área de borrador")
+            } else {
+                NSSound.beep()
+            }
+            return
+        }
+        if panel.isVisible { keyboardView.flash("↪") }
+        flushComposerToApp(pressReturn: false)
     }
 
     private func applyDictationHotKey() {
@@ -1023,6 +1054,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         transform.target = self
         menu.addItem(transform)
         transformMenuItem = transform
+        let send = NSMenuItem(title: "Enviar el borrador (\(shortcutDescription(keyCode: Settings.sendHotKeyCode, modifiers: Settings.sendHotKeyModifiers)))",
+                              action: #selector(menuSendComposer), keyEquivalent: "")
+        send.target = self
+        menu.addItem(send)
+        sendMenuItem = send
         let dictation = NSMenuItem(title: "Mantén para dictar", action: #selector(menuDictation),
                                    keyEquivalent: "")
         dictation.target = self
@@ -1057,6 +1093,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     @objc private func menuToggle() { togglePanel() }
     @objc private func menuFocusComposer() { focusComposerInput() }
     @objc private func menuTransform() { transformer?.begin() }
+    @objc private func menuSendComposer() { sendComposerFromHotKey() }
     @objc private func menuDictation() {
         toggleDictation()
     }
@@ -1131,6 +1168,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             controller.onFocusHotKeyChange = { [weak self] _, _ in self?.applyFocusHotKey() }
             controller.onDictationHotKeyChange = { [weak self] _, _ in self?.applyDictationHotKey() }
             controller.onTransformHotKeyChange = { [weak self] _, _ in self?.applyTransformHotKey() }
+            controller.onSendHotKeyChange = { [weak self] _, _ in self?.applySendHotKey() }
             controller.onDictationModelChange = { [weak self] in self?.configureDictation() }
             controller.onLanguageChange = { [weak self] lang in self?.switchLanguage(lang) }
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
