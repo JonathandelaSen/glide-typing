@@ -1058,7 +1058,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     // MARK: - Status item
 
     private func buildStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setStatusIcon("keyboard", description: "GlideBoard")
 
         let menu = NSMenu()
@@ -1153,7 +1153,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private func setStatusIcon(_ symbol: String, description: String) {
         statusItem.button?.image = NSImage(systemSymbolName: symbol,
                                            accessibilityDescription: description)
-        statusItem.button?.title = ""
+        statusItem.button?.title = BuildVersion.statusBarTitle
+        statusItem.button?.imagePosition = .imageLeading
     }
 
     /// Shows the configurable global hotkey right-aligned in the menu, like a
