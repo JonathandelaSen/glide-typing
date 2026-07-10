@@ -116,6 +116,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         history = TextHistoryConsole()
         history?.loadPersisted()
         history?.onSend = { [weak self] text in self?.sendHistoryText(text) }
+        history?.onClose = { [weak self] in self?.keyboardView.historyVisible = false }
 
         QueryLog.shared.sink = { [weak self] query in self?.console?.record(query) }
         QueryLog.shared.phraseAcceptedSink = { [weak self] in self?.console?.recordPhraseAccepted() }
@@ -933,6 +934,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         if history == nil {
             history = TextHistoryConsole()
             history?.onSend = { [weak self] text in self?.sendHistoryText(text) }
+            history?.onClose = { [weak self] in self?.keyboardView.historyVisible = false }
         }
         if history!.isVisible {
             history!.close()

@@ -13,6 +13,9 @@ final class MemoryConsole {
     /// Supplies the active language's memory (it can change at runtime).
     var memorySource: () -> PhraseMemory? = { nil }
 
+    /// Notified when the user closes the panel from its own ✕ button.
+    var onClose: (() -> Void)?
+
     init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 560),
                         styleMask: [.borderless, .nonactivatingPanel],
@@ -37,7 +40,15 @@ final class MemoryConsole {
         refreshButton.bezelStyle = .inline
         refreshButton.font = NSFont.systemFont(ofSize: 10)
 
-        let header = NSStackView(views: [title, NSView(), refreshButton])
+        let closeButton = ActionButton(title: "✕")
+        closeButton.toolTip = "Cerrar panel"
+        closeButton.onClick = { [weak self] in
+            guard let self else { return }
+            self.close()
+            self.onClose?()
+        }
+
+        let header = NSStackView(views: [title, NSView(), refreshButton, closeButton])
         header.orientation = .horizontal
 
         diagramField.font = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .regular)

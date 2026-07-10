@@ -8,6 +8,9 @@ final class ModelConsole {
     private let stack = NSStackView()
     private let statsField = NSTextField(labelWithString: "sin consultas todavía")
 
+    /// Notified when the user closes the panel from its own ✕ button.
+    var onClose: (() -> Void)?
+
     private var phraseCount = 0, phraseMs = 0, phraseEmpty = 0
     private var phraseAccepted = 0
     private var phraseFromMemory = 0
@@ -47,7 +50,15 @@ final class ModelConsole {
         clearButton.bezelStyle = .inline
         clearButton.font = NSFont.systemFont(ofSize: 10)
 
-        let header = NSStackView(views: [title, NSView(), copyAllButton, clearButton])
+        let closeButton = ActionButton(title: "✕")
+        closeButton.toolTip = "Cerrar panel"
+        closeButton.onClick = { [weak self] in
+            guard let self else { return }
+            self.close()
+            self.onClose?()
+        }
+
+        let header = NSStackView(views: [title, NSView(), copyAllButton, clearButton, closeButton])
         header.orientation = .horizontal
 
         statsField.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
@@ -336,6 +347,9 @@ final class TextHistoryConsole {
     /// Called when the user asks to re-send an entry to the focused app.
     var onSend: ((String) -> Void)?
 
+    /// Notified when the user closes the panel from its own ✕ button.
+    var onClose: (() -> Void)?
+
     /// Every entry is also appended to disk, so sent text survives app
     /// restarts and any delivery failure — it must never be unrecoverable.
     private struct StoredEntry: Codable {
@@ -387,7 +401,15 @@ final class TextHistoryConsole {
         clearButton.bezelStyle = .inline
         clearButton.font = NSFont.systemFont(ofSize: 10)
 
-        let header = NSStackView(views: [title, NSView(), copyAllButton, clearButton])
+        let closeButton = ActionButton(title: "✕")
+        closeButton.toolTip = "Cerrar panel"
+        closeButton.onClick = { [weak self] in
+            guard let self else { return }
+            self.close()
+            self.onClose?()
+        }
+
+        let header = NSStackView(views: [title, NSView(), copyAllButton, clearButton, closeButton])
         header.orientation = .horizontal
 
         stack.orientation = .vertical
