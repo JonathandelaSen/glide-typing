@@ -53,6 +53,17 @@ final class ShortcutField: NSButton {
     }
 }
 
+/// Toolbar-style tab controller that mirrors the selected tab in the window title,
+/// like the system Settings app.
+private final class SettingsTabViewController: NSTabViewController {
+    override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        super.tabView(tabView, didSelect: tabViewItem)
+        if let label = tabViewItem?.label {
+            view.window?.title = label
+        }
+    }
+}
+
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onFocusHotKeyChange: ((UInt32, UInt32) -> Void)?
@@ -67,9 +78,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onHoverGlideChange: ((Bool) -> Void)?
     var onComposerModeChange: ((Bool) -> Void)?
     var onUserDictionaryChange: (([String]) -> Void)?
+
     private var dictionaryView: NSTextView!
     private var hoverCheck: NSButton!
-
     private var scaleLabel: NSTextField!
     private var opacityLabel: NSTextField!
     private var languagePopup: NSPopUpButton!
@@ -79,21 +90,121 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var dictationLanguagePopup: NSPopUpButton!
     private var ollamaModelsTask: Task<Void, Never>?
 
+    private static let contentWidth: CGFloat = 460
+
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 570),
-                              styleMask: [.titled, .closable],
-                              backing: .buffered, defer: false)
-        window.title = "Ajustes de GlideBoard"
+        let tabs = SettingsTabViewController()
+        tabs.tabStyle = .toolbar
+        let window = NSWindow(contentViewController: tabs)
+        window.styleMask = [.titled, .closable]
+        window.toolbarStyle = .preference
         super.init(window: window)
-        buildUI()
+
+        tabs.addTabViewItem(makeTab(label: "General", symbol: "gearshape",
+                                    view: buildGeneralPane()))
+        tabs.addTabViewItem(makeTab(label: "Atajos", symbol: "command",
+                                    view: buildShortcutsPane()))
+        tabs.addTabViewItem(makeTab(label: "Dictado", symbol: "mic",
+                                    view: buildDictationPane()))
+        tabs.addTabViewItem(makeTab(label: "Inteligencia", symbol: "sparkles",
+                                    view: buildIntelligencePane()))
+        tabs.addTabViewItem(makeTab(label: "Diccionario", symbol: "character.book.closed",
+                                    view: buildDictionaryPane()))
+        window.title = tabs.tabViewItems.first?.label ?? "Ajustes"
         window.center()
+
+        if OllamaModelCatalog.isSelectorEnabled(for: Settings.completionEngine) {
+            reloadOllamaModels()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private func buildUI() {
-        guard let content = window?.contentView else { return }
+    // MARK: - Tab assembly
 
+    private func makeTab(label: String, symbol: String, view: NSView) -> NSTabViewItem {
+        let controller = NSViewController()
+        controller.view = view
+        let item = NSTabViewItem(viewController: controller)
+        item.label = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        return item
+    }
+
+    /// Wraps a form in the standard settings-pane padding at a fixed width so
+    /// every tab lines up and the window only animates its height.
+    private func makePane(_ views: [NSView]) -> NSView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView()
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalToConstant: Self.contentWidth),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20)
+        ])
+        return container
+    }
+
+    private func makeGrid(_ rows: [[NSView]]) -> NSGridView {
+        let grid = NSGridView(views: rows)
+        grid.rowSpacing = 12
+        grid.columnSpacing = 12
+        grid.column(at: 0).xPlacement = .trailing
+        grid.rowAlignment = .firstBaseline
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        return grid
+    }
+
+    // MARK: - Panes
+
+    private func buildGeneralPane() -> NSView {
+        languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        languagePopup.addItems(withTitles: ["Español", "English"])
+        languagePopup.selectItem(at: Settings.language == .spanish ? 0 : 1)
+        languagePopup.target = self
+        languagePopup.action = #selector(languageChanged)
+
+        let slider = NSSlider(value: Settings.scale, minValue: 0.7, maxValue: 1.6,
+                              target: self, action: #selector(scaleChanged(_:)))
+        slider.isContinuous = false
+        slider.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        scaleLabel = makeLabel(scaleText(Settings.scale))
+
+        // Live preview while dragging: updating the panel's alphaValue is
+        // cheap, unlike scale which rebuilds the panel.
+        let opacitySlider = NSSlider(value: Settings.opacity, minValue: 0.3, maxValue: 1.0,
+                                     target: self, action: #selector(opacityChanged(_:)))
+        opacitySlider.isContinuous = true
+        opacitySlider.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        opacityLabel = makeLabel(scaleText(Settings.opacity))
+
+        let composerCheck = NSButton(checkboxWithTitle: "Componer en el panel e insertar con ↪ / ⏎",
+                                     target: self, action: #selector(composerModeChanged(_:)))
+        composerCheck.state = Settings.composerMode ? .on : .off
+
+        hoverCheck = NSButton(checkboxWithTitle: "Glide sin clic ∿ (toque inicia, toque termina)",
+                              target: self, action: #selector(hoverGlideChanged(_:)))
+        hoverCheck.state = Settings.hoverGlide ? .on : .off
+
+        let grid = makeGrid([
+            [makeLabel("Idioma del teclado:"), languagePopup],
+            [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
+            [makeLabel("Opacidad del teclado:"), opacitySlider, opacityLabel],
+            [makeLabel("Área de borrador:"), composerCheck],
+            [makeLabel("Escritura por gestos:"), hoverCheck]
+        ])
+
+        return makePane([grid, makeHint("Los cambios se guardan al instante.")])
+    }
+
+    private func buildShortcutsPane() -> NSView {
         let shortcutField = ShortcutField(keyCode: Settings.hotKeyCode,
                                           carbonMods: Settings.hotKeyModifiers)
         shortcutField.onChange = { [weak self] code, mods in
@@ -134,42 +245,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             self?.onSendHotKeyChange?(code, mods)
         }
 
-        languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        languagePopup.addItems(withTitles: ["Español", "English"])
-        languagePopup.selectItem(at: Settings.language == .spanish ? 0 : 1)
-        languagePopup.target = self
-        languagePopup.action = #selector(languageChanged)
+        let grid = makeGrid([
+            [makeLabel("Mostrar u ocultar el teclado:"), shortcutField],
+            [makeLabel("Escribir en el borrador:"), focusShortcutField],
+            [makeLabel("Dictado (mantener pulsado):"), dictationShortcutField],
+            [makeLabel("Transformar / instrucción:"), transformShortcutField],
+            [makeLabel("Enviar el borrador:"), sendShortcutField]
+        ])
 
-        let slider = NSSlider(value: Settings.scale, minValue: 0.7, maxValue: 1.6,
-                              target: self, action: #selector(scaleChanged(_:)))
-        slider.isContinuous = false
-        slider.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        let hint = makeHint("Los atajos funcionan en todo el sistema. " +
+                            "Haz clic en uno y pulsa la combinación nueva; ⎋ cancela.")
+        return makePane([grid, hint])
+    }
 
-        scaleLabel = makeLabel(scaleText(Settings.scale))
-
-        // Live preview while dragging: updating the panel's alphaValue is
-        // cheap, unlike scale which rebuilds the panel.
-        let opacitySlider = NSSlider(value: Settings.opacity, minValue: 0.3, maxValue: 1.0,
-                                     target: self, action: #selector(opacityChanged(_:)))
-        opacitySlider.isContinuous = true
-        opacitySlider.widthAnchor.constraint(equalToConstant: 180).isActive = true
-
-        opacityLabel = makeLabel(scaleText(Settings.opacity))
-
-        enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        enginePopup.addItems(withTitles: ["Apple (sistema)", "Ollama (localhost)", "Desactivado"])
-        let engineIndex = ["system": 0, "ollama": 1, "off": 2][Settings.completionEngine] ?? 0
-        enginePopup.selectItem(at: engineIndex)
-        enginePopup.target = self
-        enginePopup.action = #selector(engineChanged)
-
-        ollamaModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        ollamaModelPopup.addItem(withTitle: Settings.ollamaModel)
-        ollamaModelPopup.target = self
-        ollamaModelPopup.action = #selector(ollamaModelChanged)
-        ollamaModelPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
-        ollamaModelPopup.isEnabled = false
-
+    private func buildDictationPane() -> NSView {
         dictationModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         let dictationModels = [
             ("Base — ligero", "base"),
@@ -204,76 +293,65 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         dictationLanguagePopup.target = self
         dictationLanguagePopup.action = #selector(dictationLanguageChanged)
 
-        hoverCheck = NSButton(checkboxWithTitle: "modo arrastre ∿ (toque inicia, toque termina)",
-                              target: self, action: #selector(hoverGlideChanged(_:)))
-        hoverCheck.state = Settings.hoverGlide ? .on : .off
+        let grid = makeGrid([
+            [makeLabel("Modelo de dictado:"), dictationModelPopup],
+            [makeLabel("Idioma del dictado:"), dictationLanguagePopup]
+        ])
 
-        let composerCheck = NSButton(checkboxWithTitle: "componer en el panel e insertar con ↪ / ⏎",
-                                     target: self, action: #selector(composerModeChanged(_:)))
-        composerCheck.state = Settings.composerMode ? .on : .off
+        let hint = makeHint("La transcripción se hace en local con WhisperKit. " +
+                            "El modelo se descarga la primera vez que se usa.")
+        return makePane([grid, hint])
+    }
 
-        let surroundingCheck = NSButton(checkboxWithTitle: "leer texto visible alrededor del campo (auditable en la consola)",
+    private func buildIntelligencePane() -> NSView {
+        enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        enginePopup.addItems(withTitles: ["Apple (sistema)", "Ollama (localhost)", "Desactivado"])
+        let engineIndex = ["system": 0, "ollama": 1, "off": 2][Settings.completionEngine] ?? 0
+        enginePopup.selectItem(at: engineIndex)
+        enginePopup.target = self
+        enginePopup.action = #selector(engineChanged)
+
+        ollamaModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        ollamaModelPopup.addItem(withTitle: Settings.ollamaModel)
+        ollamaModelPopup.target = self
+        ollamaModelPopup.action = #selector(ollamaModelChanged)
+        ollamaModelPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        ollamaModelPopup.isEnabled = false
+
+        let surroundingCheck = NSButton(checkboxWithTitle: "Leer texto visible alrededor del campo",
                                         target: self, action: #selector(surroundingContextChanged(_:)))
         surroundingCheck.state = Settings.surroundingContextEnabled ? .on : .off
 
-        let grid = NSGridView(views: [
-            [makeLabel("Atajo mostrar/ocultar:"), shortcutField],
-            [makeLabel("Atajo escribir en borrador:"), focusShortcutField],
-            [makeLabel("Atajo dictado (mantener):"), dictationShortcutField],
-            [makeLabel("Atajo transformar/instrucción:"), transformShortcutField],
-            [makeLabel("Atajo enviar borrador:"), sendShortcutField],
-            [makeLabel("Idioma:"), languagePopup],
-            [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
-            [makeLabel("Opacidad del teclado:"), opacitySlider, opacityLabel],
-            [makeLabel("Área de borrador:"), composerCheck],
-            [makeLabel("Glide sin clic:"), hoverCheck],
+        let grid = makeGrid([
             [makeLabel("Completado IA (✦):"), enginePopup],
             [makeLabel("Modelo de Ollama:"), ollamaModelPopup],
-            [makeLabel("Modelo de dictado:"), dictationModelPopup],
-            [makeLabel("Idioma del dictado:"), dictationLanguagePopup],
             [makeLabel("Contexto para instrucciones:"), surroundingCheck]
         ])
-        grid.rowSpacing = 14
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = makeLabel("El atajo funciona en todo el sistema. Los cambios se guardan al instante.")
-        hint.font = NSFont.systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
+        let hint = makeHint("El contexto alrededor del campo es auditable en la consola del modelo.")
+        return makePane([grid, hint])
+    }
 
-        // User dictionary: view and edit the learned words (one per line).
-        let dictLabel = makeLabel("Diccionario propio (una palabra por línea):")
-        dictLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    private func buildDictionaryPane() -> NSView {
+        let dictLabel = makeLabel("Palabras aprendidas (una por línea):")
 
         let dictScroll = NSTextView.scrollableTextView()
         dictionaryView = (dictScroll.documentView as! NSTextView)
         dictionaryView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         dictScroll.translatesAutoresizingMaskIntoConstraints = false
-        dictScroll.heightAnchor.constraint(equalToConstant: 110).isActive = true
-        dictScroll.widthAnchor.constraint(equalToConstant: 400).isActive = true
+        dictScroll.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        dictScroll.widthAnchor.constraint(equalToConstant: Self.contentWidth - 40).isActive = true
         dictScroll.borderType = .bezelBorder
 
         let saveButton = NSButton(title: "Guardar diccionario", target: self,
                                   action: #selector(saveDictionary))
+        saveButton.keyEquivalent = "\r"
 
-        let stack = NSStackView(views: [grid, hint, dictLabel, dictScroll, saveButton])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 18
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -24),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24)
-        ])
-
-        if OllamaModelCatalog.isSelectorEnabled(for: Settings.completionEngine) {
-            reloadOllamaModels()
-        }
+        let hint = makeHint("Las palabras del diccionario se priorizan al reconocer gestos.")
+        return makePane([dictLabel, dictScroll, saveButton, hint])
     }
+
+    // MARK: - Helpers
 
     private func makeLabel(_ text: String) -> NSTextField {
         let l = NSTextField(labelWithString: text)
@@ -281,7 +359,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return l
     }
 
+    private func makeHint(_ text: String) -> NSTextField {
+        let l = NSTextField(wrappingLabelWithString: text)
+        l.font = NSFont.systemFont(ofSize: 11)
+        l.textColor = .secondaryLabelColor
+        l.preferredMaxLayoutWidth = Self.contentWidth - 40
+        return l
+    }
+
     private func scaleText(_ v: Double) -> String { "\(Int(round(v * 100))) %" }
+
+    // MARK: - Actions
 
     @objc private func languageChanged() {
         let lang: Language = languagePopup.indexOfSelectedItem == 0 ? .spanish : .english

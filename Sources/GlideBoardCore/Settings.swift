@@ -181,6 +181,37 @@ func shortcutDescription(keyCode: UInt32, modifiers: UInt32) -> String {
     return s + keyName(for: keyCode)
 }
 
+func modifierFlags(fromCarbon modifiers: UInt32) -> NSEvent.ModifierFlags {
+    var flags: NSEvent.ModifierFlags = []
+    if modifiers & UInt32(controlKey) != 0 { flags.insert(.control) }
+    if modifiers & UInt32(optionKey) != 0 { flags.insert(.option) }
+    if modifiers & UInt32(shiftKey) != 0 { flags.insert(.shift) }
+    if modifiers & UInt32(cmdKey) != 0 { flags.insert(.command) }
+    return flags
+}
+
+/// Character usable as an `NSMenuItem.keyEquivalent` for a Carbon key code,
+/// so configurable global hotkeys render right-aligned in menus like native
+/// shortcuts. `nil` when the key has no menu representation.
+func keyEquivalentCharacter(for keyCode: UInt32) -> String? {
+    switch keyCode {
+    case 49: return " "
+    case 36: return "\r"
+    case 48: return "\t"
+    case 51: return "\u{08}"
+    case 53: return "\u{1B}"
+    case 123: return String(UnicodeScalar(NSLeftArrowFunctionKey)!)
+    case 124: return String(UnicodeScalar(NSRightArrowFunctionKey)!)
+    case 125: return String(UnicodeScalar(NSDownArrowFunctionKey)!)
+    case 126: return String(UnicodeScalar(NSUpArrowFunctionKey)!)
+    default:
+        let name = keyName(for: keyCode)
+        guard name.count == 1, let scalar = name.unicodeScalars.first,
+              scalar.isASCII else { return nil }
+        return name.lowercased()
+    }
+}
+
 func keyName(for keyCode: UInt32) -> String {
     let names: [UInt32: String] = [
         0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H",
