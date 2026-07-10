@@ -44,6 +44,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private var focusMenuItem: NSMenuItem?
     private var transformMenuItem: NSMenuItem?
     private var dictationMenuItem: NSMenuItem?
+    private var spanishMenuItem: NSMenuItem?
+    private var englishMenuItem: NSMenuItem?
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
     private var targetPollTimer: Timer?
@@ -185,7 +187,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                         modifiers: Settings.hotKeyModifiers) { [weak self] in
             self?.togglePanel()
         }
-        toggleMenuItem?.title = "Mostrar/Ocultar teclado (\(shortcutDescription(keyCode: Settings.hotKeyCode, modifiers: Settings.hotKeyModifiers)))"
+        applyShortcutDisplay(toggleMenuItem, keyCode: Settings.hotKeyCode,
+                             modifiers: Settings.hotKeyModifiers)
         if hotKey == nil {
             NSLog("GlideBoard: could not register hotkey — it may be taken by another app")
         }
@@ -198,7 +201,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                              modifiers: Settings.focusHotKeyModifiers) { [weak self] in
             self?.focusComposerInput()
         }
-        focusMenuItem?.title = "Escribir en el borrador (\(shortcutDescription(keyCode: Settings.focusHotKeyCode, modifiers: Settings.focusHotKeyModifiers)))"
+        applyShortcutDisplay(focusMenuItem, keyCode: Settings.focusHotKeyCode,
+                             modifiers: Settings.focusHotKeyModifiers)
         if focusHotKey == nil {
             NSLog("GlideBoard: could not register composer focus hotkey — it may be taken by another app")
         }
@@ -211,7 +215,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                                  modifiers: Settings.transformHotKeyModifiers) { [weak self] in
             self?.transformer?.begin()
         }
-        transformMenuItem?.title = "Transformar texto enfocado (\(shortcutDescription(keyCode: Settings.transformHotKeyCode, modifiers: Settings.transformHotKeyModifiers)))"
+        applyShortcutDisplay(transformMenuItem, keyCode: Settings.transformHotKeyCode,
+                             modifiers: Settings.transformHotKeyModifiers)
         if transformHotKey == nil {
             NSLog("GlideBoard: could not register transform hotkey — it may be taken by another app")
         }
@@ -262,33 +267,38 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         refreshDictationMenuTitle()
         switch state {
         case .idle:
-            statusItem.button?.title = "⌨︎"
+            setStatusIcon("keyboard", description: "GlideBoard")
         case .preparing:
-            statusItem.button?.title = "◉"
+            setStatusIcon("mic", description: "GlideBoard — preparando micrófono")
             keyboardView.flash("Preparando micrófono…")
         case .recording:
-            statusItem.button?.title = "●"
+            setStatusIcon("mic.fill", description: "GlideBoard — dictando")
             keyboardView.flash("Dictando… suelta para transcribir")
         case .transcribing:
-            statusItem.button?.title = "…"
+            setStatusIcon("waveform", description: "GlideBoard — transcribiendo")
             keyboardView.flash("WhisperKit está transcribiendo…")
         case .failed(let message):
-            statusItem.button?.title = "⌨︎"
+            setStatusIcon("keyboard", description: "GlideBoard")
             keyboardView.flash(message)
             NSLog("GlideBoard dictation: %@", message)
         }
     }
 
     private func refreshDictationMenuTitle() {
-        let shortcut = shortcutDescription(keyCode: Settings.dictationHotKeyCode,
-                                           modifiers: Settings.dictationHotKeyModifiers)
         switch dictationController?.state {
         case .preparing, .recording:
             dictationMenuItem?.title = "Terminar dictado"
+            dictationMenuItem?.keyEquivalent = ""
+            dictationMenuItem?.isEnabled = true
         case .transcribing:
             dictationMenuItem?.title = "Transcribiendo con WhisperKit…"
+            dictationMenuItem?.keyEquivalent = ""
+            dictationMenuItem?.isEnabled = false
         default:
-            dictationMenuItem?.title = "Mantén para dictar (\(shortcut))"
+            dictationMenuItem?.title = "Iniciar dictado (mantener atajo)"
+            applyShortcutDisplay(dictationMenuItem, keyCode: Settings.dictationHotKeyCode,
+                                 modifiers: Settings.dictationHotKeyModifiers)
+            dictationMenuItem?.isEnabled = true
         }
     }
 
@@ -826,53 +836,110 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
 
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.title = "⌨︎"
+        setStatusIcon("keyboard", description: "GlideBoard")
 
         let menu = NSMenu()
-        let toggle = NSMenuItem(title: "Mostrar/Ocultar teclado (\(shortcutDescription(keyCode: Settings.hotKeyCode, modifiers: Settings.hotKeyModifiers)))",
+        // Manual enabling so the dictation item can be disabled while transcribing.
+        menu.autoenablesItems = false
+
+        // Primary actions. Their global hotkeys render right-aligned like
+        // native key equivalents (see applyShortcutDisplay).
+        let toggle = NSMenuItem(title: "Mostrar u ocultar el teclado",
                                 action: #selector(menuToggle), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
         toggleMenuItem = toggle
-        let focus = NSMenuItem(title: "Escribir en el borrador (\(shortcutDescription(keyCode: Settings.focusHotKeyCode, modifiers: Settings.focusHotKeyModifiers)))",
+        applyShortcutDisplay(toggle, keyCode: Settings.hotKeyCode,
+                             modifiers: Settings.hotKeyModifiers)
+
+        let focus = NSMenuItem(title: "Escribir en el borrador",
                                action: #selector(menuFocusComposer), keyEquivalent: "")
         focus.target = self
         menu.addItem(focus)
         focusMenuItem = focus
-        let transform = NSMenuItem(title: "Transformar texto enfocado (\(shortcutDescription(keyCode: Settings.transformHotKeyCode, modifiers: Settings.transformHotKeyModifiers)))",
+        applyShortcutDisplay(focus, keyCode: Settings.focusHotKeyCode,
+                             modifiers: Settings.focusHotKeyModifiers)
+
+        let transform = NSMenuItem(title: "Transformar texto enfocado",
                                    action: #selector(menuTransform), keyEquivalent: "")
         transform.target = self
         menu.addItem(transform)
         transformMenuItem = transform
-        let dictation = NSMenuItem(title: "Mantén para dictar", action: #selector(menuDictation),
+        applyShortcutDisplay(transform, keyCode: Settings.transformHotKeyCode,
+                             modifiers: Settings.transformHotKeyModifiers)
+
+        let dictation = NSMenuItem(title: "Iniciar dictado", action: #selector(menuDictation),
                                    keyEquivalent: "")
         dictation.target = self
         menu.addItem(dictation)
         dictationMenuItem = dictation
         refreshDictationMenuTitle()
+
+        menu.addItem(.separator())
+
+        // Keyboard language as a submenu with a checkmark on the active one.
+        let languageItem = NSMenuItem(title: "Idioma del teclado", action: nil, keyEquivalent: "")
+        let languageMenu = NSMenu()
+        let es = NSMenuItem(title: "Español", action: #selector(setSpanish), keyEquivalent: "")
+        es.target = self
+        languageMenu.addItem(es)
+        spanishMenuItem = es
+        let en = NSMenuItem(title: "English", action: #selector(setEnglish), keyEquivalent: "")
+        en.target = self
+        languageMenu.addItem(en)
+        englishMenuItem = en
+        languageItem.submenu = languageMenu
+        menu.addItem(languageItem)
+        reflectLanguageInMenu(Settings.language)
+
+        menu.addItem(.separator())
+
+        // Diagnostic consoles, tucked into a submenu.
+        let toolsItem = NSMenuItem(title: "Herramientas", action: nil, keyEquivalent: "")
+        let toolsMenu = NSMenu()
+        let debug = NSMenuItem(title: "Consola del modelo (en vivo)…", action: #selector(openDebug), keyEquivalent: "")
+        debug.target = self
+        toolsMenu.addItem(debug)
+        let memory = NSMenuItem(title: "Memoria de predicciones…", action: #selector(openMemoryConsole), keyEquivalent: "")
+        memory.target = self
+        toolsMenu.addItem(memory)
+        let textHistory = NSMenuItem(title: "Histórico de texto introducido…", action: #selector(openHistory), keyEquivalent: "")
+        textHistory.target = self
+        toolsMenu.addItem(textHistory)
+        toolsItem.submenu = toolsMenu
+        menu.addItem(toolsItem)
+
         menu.addItem(.separator())
         let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
-        let debug = NSMenuItem(title: "Consola del modelo (en vivo)…", action: #selector(openDebug), keyEquivalent: "")
-        debug.target = self
-        menu.addItem(debug)
-        let memory = NSMenuItem(title: "Memoria de predicciones…", action: #selector(openMemoryConsole), keyEquivalent: "")
-        memory.target = self
-        menu.addItem(memory)
-        let textHistory = NSMenuItem(title: "Histórico de texto introducido…", action: #selector(openHistory), keyEquivalent: "")
-        menu.addItem(textHistory)
-        menu.addItem(.separator())
-        let es = NSMenuItem(title: "Español", action: #selector(setSpanish), keyEquivalent: "")
-        es.target = self
-        let en = NSMenuItem(title: "English", action: #selector(setEnglish), keyEquivalent: "")
-        en.target = self
-        menu.addItem(es)
-        menu.addItem(en)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Salir de GlideBoard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
         statusItem.menu = menu
+    }
+
+    private func setStatusIcon(_ symbol: String, description: String) {
+        statusItem.button?.image = NSImage(systemSymbolName: symbol,
+                                           accessibilityDescription: description)
+        statusItem.button?.title = ""
+    }
+
+    /// Shows the configurable global hotkey right-aligned in the menu, like a
+    /// native key equivalent. The actual trigger stays the Carbon hotkey.
+    private func applyShortcutDisplay(_ item: NSMenuItem?, keyCode: UInt32, modifiers: UInt32) {
+        guard let item else { return }
+        if let key = keyEquivalentCharacter(for: keyCode) {
+            item.keyEquivalent = key
+            item.keyEquivalentModifierMask = modifierFlags(fromCarbon: modifiers)
+        } else {
+            item.keyEquivalent = ""
+        }
+    }
+
+    private func reflectLanguageInMenu(_ lang: Language) {
+        spanishMenuItem?.state = lang == .spanish ? .on : .off
+        englishMenuItem?.state = lang == .english ? .on : .off
     }
 
     @objc private func menuToggle() { togglePanel() }
@@ -904,6 +971,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         keyboardView.setLanguage(lang)
         resetInsertionState()
         settingsController?.reflectLanguage(lang)
+        reflectLanguageInMenu(lang)
     }
 
     @objc private func openDebug() {
