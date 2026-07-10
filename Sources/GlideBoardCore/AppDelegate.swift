@@ -13,6 +13,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private var transformHotKey: HotKey?
     private var dictationHotKey: HotKey?
     private var dictationController: DictationController?
+    private lazy var dictationOverlay = DictationOverlay()
+    /// Captured before the mic starts. It must never be recalculated from the
+    /// status overlay's focus when the transcript is ready.
+    private var dictationTarget: DictationTarget?
+    private var dictationDeliveryInProgress = false
+    /// Invalidates delayed delivery/overlay work when the next dictation starts.
+    private var dictationSessionID = 0
     /// Plan A: transform the selection of the focused app in place.
     private var transformer: TextTransformer?
     /// Claims the physical Tab key while a ghost is on screen, so the phrase
@@ -242,19 +249,32 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         dictationController = DictationController(
             engine: engine,
             language: { Settings.dictationLanguage.whisperLanguage },
+            willStart: { [weak self] in self?.captureDictationTarget() },
             output: { [weak self] transcript in self?.emitDictationTranscript(transcript) },
             stateChanged: { [weak self] state in self?.dictationStateChanged(state) }
         )
     }
 
     private func emitDictationTranscript(_ transcript: String) {
-        let existingText = composerEnabled ? composerText : recentText
-        let insertion = DictationInsertion.text(transcript: transcript,
-                                                existingText: existingText)
-        guard !insertion.isEmpty else { return }
-        emitText(insertion)
-        keyboardView.flash("Dictado listo")
-        requestCompletion()
+        let target = dictationTarget ?? .fallback
+        let sessionID = dictationSessionID
+        switch target {
+        case .composer(let selection, let textBeforeSelection):
+            let insertion = DictationInsertion.text(transcript: transcript,
+                                                    existingText: textBeforeSelection,
+                                                    replacingSelection: target.replacesSelection)
+            guard !insertion.isEmpty else { return }
+            insertDictationIntoComposer(insertion, selection: selection, reveal: false)
+            finishDictationDelivery(destination: target.destinationName, sessionID: sessionID)
+        case .external(let external):
+            let insertion = DictationInsertion.text(transcript: transcript,
+                                                    existingText: external.textBeforeSelection,
+                                                    replacingSelection: target.replacesSelection)
+            guard !insertion.isEmpty else { return }
+            deliverDictation(insertion, rawTranscript: transcript, to: external, sessionID: sessionID)
+        case .fallback:
+            insertDictationFallback(transcript, sessionID: sessionID)
+        }
     }
 
     private func dictationStateChanged(_ state: DictationState) {
@@ -263,19 +283,177 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         switch state {
         case .idle:
             statusItem.button?.title = "⌨︎"
+            if !dictationDeliveryInProgress {
+                dictationOverlay.hide()
+                dictationTarget = nil
+            }
         case .preparing:
             statusItem.button?.title = "◉"
             keyboardView.flash("Preparando micrófono…")
+            dictationOverlay.show(.preparing,
+                                  destination: (dictationTarget ?? .fallback).destinationName)
         case .recording:
             statusItem.button?.title = "●"
             keyboardView.flash("Dictando… suelta para transcribir")
+            dictationOverlay.show(.recording,
+                                  destination: (dictationTarget ?? .fallback).destinationName)
         case .transcribing:
             statusItem.button?.title = "…"
             keyboardView.flash("WhisperKit está transcribiendo…")
+            dictationOverlay.show(.transcribing,
+                                  destination: (dictationTarget ?? .fallback).destinationName)
         case .failed(let message):
             statusItem.button?.title = "⌨︎"
             keyboardView.flash(message)
             NSLog("GlideBoard dictation: %@", message)
+            dictationDeliveryInProgress = false
+            dictationTarget = nil
+            dictationOverlay.show(.failed(message), destination: "GlideBoard")
+            dictationOverlay.hide(after: 2.4)
+        }
+    }
+
+    /// Snapshot the precise recipient before our own floating UI is shown.
+    /// A board composer is intentional only when it actually holds key focus;
+    /// otherwise an external app with a real editable field wins.
+    private func captureDictationTarget() {
+        dictationSessionID += 1
+        if panel.isKeyWindow, composerEnabled {
+            let selection = keyboardView.composerView.selectedRange()
+            let text = composerText as NSString
+            let location = min(max(0, selection.location), text.length)
+            dictationTarget = .composer(selection: NSRange(location: location,
+                                                            length: min(selection.length, text.length - location)),
+                                              textBeforeSelection: text.substring(to: location))
+            return
+        }
+
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        if let external = CapturedTextTarget.capture(in: frontmost) {
+            dictationTarget = .external(external)
+            lastExternalApp = external.app
+        } else {
+            dictationTarget = .fallback
+        }
+    }
+
+    /// Insert in the board with NSTextView replacement semantics: a selected
+    /// range is replaced, while a zero-length selection inserts at the caret.
+    private func insertDictationIntoComposer(_ insertion: String, selection: NSRange, reveal: Bool) {
+        let length = (composerText as NSString).length
+        let location = min(max(0, selection.location), length)
+        keyboardView.composerView.setSelectedRange(
+            NSRange(location: location, length: min(selection.length, length - location))
+        )
+        keyboardView.composerInsert(insertion)
+        noteDictationInsertion(insertion)
+        if reveal {
+            showPanel()
+            panel.makeKey()
+            panel.makeFirstResponder(keyboardView.composerView)
+            keyboardView.composerView.scrollRangeToVisible(keyboardView.composerView.selectedRange())
+        }
+    }
+
+    /// No external field was available at start: turn the board into the safe
+    /// destination, keep any existing draft, and put the transcript at the
+    /// board's current cursor rather than replacing the whole draft.
+    private func insertDictationFallback(_ transcript: String, sessionID: Int) {
+        guard sessionID == dictationSessionID else { return }
+        if !composerEnabled {
+            composerEnabled = true
+            keyboardView.composerEnabled = true
+        }
+        let selection = keyboardView.composerView.selectedRange()
+        let text = composerText as NSString
+        let location = min(max(0, selection.location), text.length)
+        let insertion = DictationInsertion.text(transcript: transcript,
+                                                existingText: text.substring(to: location),
+                                                replacingSelection: selection.length > 0)
+        guard !insertion.isEmpty else { return }
+        insertDictationIntoComposer(insertion,
+                                    selection: NSRange(location: location,
+                                                       length: min(selection.length, text.length - location)),
+                                    reveal: true)
+        finishDictationDelivery(destination: "GlideBoard", sessionID: sessionID)
+    }
+
+    private func deliverDictation(_ insertion: String, rawTranscript: String,
+                                  to target: CapturedTextTarget, sessionID: Int) {
+        dictationDeliveryInProgress = true
+        dictationOverlay.show(.inserting, destination: target.app.localizedName ?? "la aplicación")
+        target.app.activate()
+        attemptDictationDelivery(insertion, rawTranscript: rawTranscript, to: target,
+                                 attemptsRemaining: 12, sessionID: sessionID)
+    }
+
+    private func attemptDictationDelivery(_ insertion: String, rawTranscript: String,
+                                          to target: CapturedTextTarget, attemptsRemaining: Int,
+                                          sessionID: Int) {
+        guard sessionID == dictationSessionID else { return }
+        guard !target.app.isTerminated else {
+            dictationDeliveryInProgress = false
+            insertDictationFallback(rawTranscript, sessionID: sessionID)
+            return
+        }
+        guard target.app.isActive else {
+            if attemptsRemaining == 0 {
+                dictationDeliveryInProgress = false
+                insertDictationFallback(rawTranscript, sessionID: sessionID)
+                return
+            }
+            target.app.activate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                self?.attemptDictationDelivery(insertion, rawTranscript: rawTranscript, to: target,
+                                                attemptsRemaining: attemptsRemaining - 1, sessionID: sessionID)
+            }
+            return
+        }
+
+        // AX replacement is exact and keeps the user's text intact. Chromium
+        // editors often reject it, so restore the saved selection then type.
+        if target.replaceSelection(with: insertion) {
+            noteDictationInsertion(insertion)
+            finishDictationDelivery(destination: target.app.localizedName ?? "la aplicación",
+                                    sessionID: sessionID)
+            return
+        }
+        guard target.prepareForInsertion() else {
+            if attemptsRemaining == 0 {
+                dictationDeliveryInProgress = false
+                insertDictationFallback(rawTranscript, sessionID: sessionID)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                self?.attemptDictationDelivery(insertion, rawTranscript: rawTranscript, to: target,
+                                                attemptsRemaining: attemptsRemaining - 1, sessionID: sessionID)
+            }
+            return
+        }
+        TextInjector.type(insertion)
+        noteDictationInsertion(insertion)
+        finishDictationDelivery(destination: target.app.localizedName ?? "la aplicación",
+                                sessionID: sessionID)
+    }
+
+    private func noteDictationInsertion(_ text: String) {
+        history?.record(text)
+        appendRecent(text)
+        updateAutoShift()
+        keyboardView.flash("Dictado listo")
+        requestCompletion()
+    }
+
+    private func finishDictationDelivery(destination: String, sessionID: Int) {
+        guard sessionID == dictationSessionID else { return }
+        dictationDeliveryInProgress = true
+        dictationOverlay.show(.inserting, destination: destination)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            guard let self else { return }
+            guard self.dictationSessionID == sessionID else { return }
+            self.dictationDeliveryInProgress = false
+            self.dictationTarget = nil
+            self.dictationOverlay.hide()
         }
     }
 

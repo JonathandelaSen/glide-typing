@@ -21,7 +21,7 @@ precondition(hotKeyPhase(eventKind: UInt32(kEventRawKeyDown)) == nil)
 SWIFT
 
 swiftc \
-    "$repo_root/Sources/GlideBoard/HotKey.swift" \
+    "$repo_root/Sources/GlideBoardCore/HotKey.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/hotkey-routing"
 
