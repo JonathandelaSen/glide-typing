@@ -31,19 +31,64 @@ enum FocusedFieldReader {
                                      kCFBooleanTrue)
     }
 
-    static func isEditableTextTarget(role: String?, supportsTextSelection: Bool) -> Bool {
+    /// Containers that answer AXSelectedTextRange without being writable.
+    /// Chromium exposes the attribute on the whole page (web area, groups,
+    /// static text…), so "supports text selection" alone is not proof of an
+    /// editable field — dictating against one of these types into the void.
+    private static let selectableContainerRoles: Set<String> = [
+        "AXWebArea",
+        kAXGroupRole as String,
+        kAXStaticTextRole as String,
+        kAXScrollAreaRole as String,
+        kAXLayoutAreaRole as String,
+        kAXSplitGroupRole as String,
+        kAXListRole as String,
+        kAXTableRole as String,
+        kAXOutlineRole as String,
+        kAXRowRole as String,
+        kAXCellRole as String,
+        "AXLink",
+        kAXImageRole as String,
+        kAXWindowRole as String,
+    ]
+
+    static func isEditableTextTarget(role: String?, supportsTextSelection: Bool,
+                                     hasEditableAncestor: Bool = false) -> Bool {
+        // Chromium marks focused nodes inside inputs/contenteditable with
+        // AXEditableAncestor; that beats whatever role the node reports.
+        if hasEditableAncestor { return true }
         guard let role else { return false }
-        return supportsTextSelection
-            || role == (kAXTextFieldRole as String)
+        if role == (kAXTextFieldRole as String)
             || role == (kAXTextAreaRole as String)
-            || role == (kAXComboBoxRole as String)
+            || role == (kAXComboBoxRole as String) {
+            return true
+        }
+        return supportsTextSelection && !selectableContainerRoles.contains(role)
     }
 
-    static func textTargetStatus(role: String?, supportsTextSelection: Bool) -> TextTargetStatus {
+    static func textTargetStatus(role: String?, supportsTextSelection: Bool,
+                                 hasEditableAncestor: Bool = false) -> TextTargetStatus {
         guard let role else { return .unknown }
-        return isEditableTextTarget(role: role, supportsTextSelection: supportsTextSelection)
+        return isEditableTextTarget(role: role, supportsTextSelection: supportsTextSelection,
+                                    hasEditableAncestor: hasEditableAncestor)
             ? .editable
             : .notEditable
+    }
+
+    /// Whether Chromium reports the element as living inside editable web
+    /// content (an input or contenteditable region). Non-web elements simply
+    /// lack the attribute.
+    static func elementHasEditableAncestor(_ element: AXUIElement) -> Bool {
+        var ref: CFTypeRef?
+        return AXUIElementCopyAttributeValue(element, "AXEditableAncestor" as CFString,
+                                             &ref) == .success && ref != nil
+    }
+
+    /// Ask an app to build its accessibility tree ahead of need — Electron
+    /// and Chromium build it lazily, and a dictation started right after a
+    /// switch to a cold app would otherwise find no focused element.
+    static func warmAccessibility(in app: NSRunningApplication?) {
+        enableElectronAccessibilityIfNeeded(in: app)
     }
 
     /// Whether the target app's focused element can currently receive text.
@@ -70,7 +115,8 @@ enum FocusedFieldReader {
             &rangeRef
         ) == .success
         return textTargetStatus(role: roleRef as? String,
-                                supportsTextSelection: supportsTextSelection)
+                                supportsTextSelection: supportsTextSelection,
+                                hasEditableAncestor: elementHasEditableAncestor(element))
     }
 
     static func hasEditableTextTarget(in app: NSRunningApplication?) -> Bool {

@@ -19,6 +19,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     /// status overlay's focus when the transcript is ready.
     private var dictationTarget: DictationTarget?
     private var dictationDeliveryInProgress = false
+    /// The keyboard was ordered out to force system key focus back to the
+    /// dictation target; restore it when the delivery settles.
+    private var dictationPanelHidden = false
     /// Invalidates delayed delivery/overlay work when the next dictation starts.
     private var dictationSessionID = 0
     /// Plan A: transform the selection of the focused app in place.
@@ -117,7 +120,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             object: nil, queue: .main) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   app.processIdentifier != selfPID else { return }
-            Task { @MainActor [weak self] in self?.lastExternalApp = app }
+            Task { @MainActor [weak self] in
+                self?.lastExternalApp = app
+                // Electron/Chromium build their AX tree lazily; warming it on
+                // activation lets a dictation started right away find the
+                // focused field even while our panel (and its polling) is hidden.
+                FocusedFieldReader.warmAccessibility(in: app)
+            }
         }
 
         buildPanel()
@@ -327,6 +336,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             if !dictationDeliveryInProgress {
                 dictationOverlay.hide()
                 dictationTarget = nil
+                restoreDictationPanel()
             }
         case .preparing:
             setStatusIcon("mic", description: "GlideBoard — preparando micrófono")
@@ -349,6 +359,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             NSLog("GlideBoard dictation: %@", message)
             dictationDeliveryInProgress = false
             dictationTarget = nil
+            restoreDictationPanel()
             dictationOverlay.show(.failed(message), destination: "GlideBoard")
             dictationOverlay.hide(after: 2.4)
         }
@@ -373,8 +384,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         if let external = CapturedTextTarget.capture(in: frontmost) {
             dictationTarget = .external(external)
             lastExternalApp = external.app
+            NSLog("GlideBoard dictation: destino %@ (campo editable enfocado)",
+                  external.app.localizedName ?? "?")
         } else {
             dictationTarget = .fallback
+            NSLog("GlideBoard dictation: sin campo editable en %@ — el borrador recibirá el texto",
+                  frontmost?.localizedName ?? "ninguna app")
         }
     }
 
@@ -433,45 +448,79 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                                           sessionID: Int) {
         guard sessionID == dictationSessionID else { return }
         guard !target.app.isTerminated else {
+            NSLog("GlideBoard dictation: %@ terminó — el borrador recibe el texto",
+                  target.app.localizedName ?? "la app destino")
             dictationDeliveryInProgress = false
+            restoreDictationPanel()
             insertDictationFallback(rawTranscript, sessionID: sessionID)
             return
         }
-        guard target.app.isActive else {
-            if attemptsRemaining == 0 {
-                dictationDeliveryInProgress = false
-                insertDictationFallback(rawTranscript, sessionID: sessionID)
-                return
-            }
-            target.app.activate()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+        guard attemptsRemaining > 0 else {
+            NSLog("GlideBoard dictation: no se pudo entregar a %@ — el borrador recibe el texto",
+                  target.app.localizedName ?? "?")
+            dictationDeliveryInProgress = false
+            restoreDictationPanel()
+            insertDictationFallback(rawTranscript, sessionID: sessionID)
+            return
+        }
+        let retry = { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 self?.attemptDictationDelivery(insertion, rawTranscript: rawTranscript, to: target,
-                                                attemptsRemaining: attemptsRemaining - 1, sessionID: sessionID)
+                                               attemptsRemaining: attemptsRemaining - 1,
+                                               sessionID: sessionID)
             }
+        }
+        // Same ground-truth chain as the composer delivery: isActive and the
+        // per-app AX focus lie while our nonactivating panel holds key status,
+        // and synthetic keystrokes follow the *system* keyboard focus.
+        guard target.app.isActive else {
+            target.app.activate()
+            retry()
+            return
+        }
+        if panel.isKeyWindow {
+            // Blink-free handoff: the panel must leave the screen for key
+            // status to return to the target; re-adding it in the same turn
+            // keeps it visible without reclaiming key.
+            panel.makeFirstResponder(nil)
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+            retry()
+            return
+        }
+        if FocusedFieldReader.systemFocusPid() == ProcessInfo.processInfo.processIdentifier {
+            if attemptsRemaining <= 9, panel.isVisible, !dictationPanelHidden {
+                // The handoff didn't move system focus back to the target:
+                // really hide the panel until the delivery settles.
+                panel.makeFirstResponder(nil)
+                panel.orderOut(nil)
+                dictationPanelHidden = true
+            }
+            retry()
+            return
+        }
+        if TextInjector.physicalModifiersDown {
+            // A finger still holds the dictation shortcut's modifiers; typed
+            // now, the text would arrive as key equivalents and vanish.
+            retry()
             return
         }
 
         // AX replacement is exact and keeps the user's text intact. Chromium
         // editors often reject it, so restore the saved selection then type.
         if target.replaceSelection(with: insertion) {
+            NSLog("GlideBoard dictation: insertado por AX en %@", target.app.localizedName ?? "?")
             noteDictationInsertion(insertion)
             finishDictationDelivery(destination: target.app.localizedName ?? "la aplicación",
                                     sessionID: sessionID)
             return
         }
         guard target.prepareForInsertion() else {
-            if attemptsRemaining == 0 {
-                dictationDeliveryInProgress = false
-                insertDictationFallback(rawTranscript, sessionID: sessionID)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-                self?.attemptDictationDelivery(insertion, rawTranscript: rawTranscript, to: target,
-                                                attemptsRemaining: attemptsRemaining - 1, sessionID: sessionID)
-            }
+            retry()
             return
         }
         TextInjector.type(insertion)
+        NSLog("GlideBoard dictation: tecleado en %@", target.app.localizedName ?? "?")
         noteDictationInsertion(insertion)
         finishDictationDelivery(destination: target.app.localizedName ?? "la aplicación",
                                 sessionID: sessionID)
@@ -495,7 +544,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             self.dictationDeliveryInProgress = false
             self.dictationTarget = nil
             self.dictationOverlay.hide()
+            self.restoreDictationPanel()
         }
+    }
+
+    private func restoreDictationPanel() {
+        guard dictationPanelHidden else { return }
+        dictationPanelHidden = false
+        panel.orderFrontRegardless()
     }
 
     private func refreshDictationMenuTitle() {
@@ -743,6 +799,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         phraseMemory?.learn(text: text)
         memoryConsole?.refresh()
         composerDeliveryInProgress = true
+        // macOS plays a scale "pop" animation on every panel orderOut/
+        // orderFront. During delivery those reorders are focus plumbing, not
+        // UI: without this the panel visibly pulses on every send.
+        panel.animationBehavior = .none
         if panel.isKeyWindow {
             // The composer was clicked, so our nonactivating panel holds key
             // focus — while the target often remains the *active* app, which
@@ -774,6 +834,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             return
         }
         composerDeliveryInProgress = true
+        panel.animationBehavior = .none // same anti-pulse as flushComposerToApp
         if panel.isKeyWindow || history?.panel.isKeyWindow == true {
             // Same nonactivating-panel gotcha as flushComposerToApp: while any
             // of our panels holds key focus, synthetic keystrokes route back
@@ -797,6 +858,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             panelHiddenForDelivery = false
             panel.orderFrontRegardless()
         }
+        // Give the show/hide toggle its normal animation back.
+        panel.animationBehavior = .default
     }
 
     private func deliverComposer(_ text: String, pressReturn: Bool, attemptsRemaining: Int,

@@ -32,10 +32,37 @@ func completionChecks() async {
             role: kAXTextFieldRole as String, supportsTextSelection: false))
         try expectTrue(FocusedFieldReader.isEditableTextTarget(
             role: kAXTextAreaRole as String, supportsTextSelection: false))
-        try expectTrue(FocusedFieldReader.isEditableTextTarget(
-            role: "AXWebArea", supportsTextSelection: true))
         try expectFalse(FocusedFieldReader.isEditableTextTarget(
             role: kAXButtonRole as String, supportsTextSelection: false))
+    }
+
+    await c.test("a selectable page is not an editable target (Chromium)") {
+        // Chromium answers AXSelectedTextRange on the whole page — web area,
+        // groups, static text — so selection support alone must not turn a
+        // read-only page into a dictation destination.
+        try expectFalse(FocusedFieldReader.isEditableTextTarget(
+            role: "AXWebArea", supportsTextSelection: true))
+        try expectFalse(FocusedFieldReader.isEditableTextTarget(
+            role: kAXGroupRole as String, supportsTextSelection: true))
+        try expectFalse(FocusedFieldReader.isEditableTextTarget(
+            role: kAXStaticTextRole as String, supportsTextSelection: true))
+    }
+
+    await c.test("web content inside editable ancestors accepts text") {
+        // contenteditable/rich editors: Chromium marks the focused node with
+        // AXEditableAncestor even when its role is a plain group or web area.
+        try expectTrue(FocusedFieldReader.isEditableTextTarget(
+            role: "AXWebArea", supportsTextSelection: true, hasEditableAncestor: true))
+        try expectTrue(FocusedFieldReader.isEditableTextTarget(
+            role: kAXGroupRole as String, supportsTextSelection: true,
+            hasEditableAncestor: true))
+    }
+
+    await c.test("custom native editors keep the selection-range fallback") {
+        // Non-container roles that expose a selection range (custom text
+        // views without a standard role) still count as editable.
+        try expectTrue(FocusedFieldReader.isEditableTextTarget(
+            role: "AXCustomEditor", supportsTextSelection: true))
     }
 
     await c.test("unknown targets still allow an insertion attempt") {

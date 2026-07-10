@@ -78,8 +78,11 @@ final class CapturedTextTarget {
         let hasSelectionRange = AXUIElementCopyAttributeValue(
             element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
         ) == .success
-        guard FocusedFieldReader.isEditableTextTarget(role: role,
-                                                      supportsTextSelection: hasSelectionRange) else {
+        guard FocusedFieldReader.isEditableTextTarget(
+            role: role,
+            supportsTextSelection: hasSelectionRange,
+            hasEditableAncestor: FocusedFieldReader.elementHasEditableAncestor(element)
+        ) else {
             return nil
         }
 
