@@ -34,14 +34,17 @@ func dictationChecks() async {
     await c.test("press starts recording and publishes the state sequence") {
         let engine = DictationEngineSpy()
         var states: [DictationState] = []
+        var targetSnapshots = 0
         let controller = DictationController(
             engine: engine,
             language: { "es" },
+            willStart: { targetSnapshots += 1 },
             output: { _ in },
             stateChanged: { states.append($0) }
         )
         await controller.press()
         try expectEqual(engine.startCount, 1)
+        try expectEqual(targetSnapshots, 1)
         try expectEqual(controller.state, .recording)
         try expectEqual(states, [.preparing, .recording])
     }
@@ -159,6 +162,10 @@ func dictationChecks() async {
                         "nuevo texto")
         try expectEqual(DictationInsertion.text(transcript: "nuevo texto",
                                                 existingText: ""),
+                        "nuevo texto")
+        try expectEqual(DictationInsertion.text(transcript: "nuevo texto",
+                                                existingText: "borrador",
+                                                replacingSelection: true),
                         "nuevo texto")
         try expectEqual(DictationInsertion.text(transcript: "  ", existingText: "x"), "")
     }

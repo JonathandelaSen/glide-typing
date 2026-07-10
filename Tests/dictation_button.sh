@@ -26,7 +26,7 @@ precondition(!dictationButtonWasPressed(at: CGPoint(x: 120, y: 15),
 SWIFT
 
 swiftc \
-    "$repo_root/Sources/GlideBoard/DictationButtonHitTesting.swift" \
+    "$repo_root/Sources/GlideBoardCore/DictationButtonHitTesting.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/dictation-button"
 

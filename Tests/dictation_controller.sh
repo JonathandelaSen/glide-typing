@@ -11,7 +11,7 @@ import Foundation
 final class EngineSpy: DictationEngine {
     var starts = 0
     var stops = 0
-    var languages: [String] = []
+    var languages: [String?] = []
     var transcript = "  Hola desde WhisperKit. \n"
     var waitBeforeStarting = false
     var startContinuation: CheckedContinuation<Void, Never>?
@@ -23,7 +23,7 @@ final class EngineSpy: DictationEngine {
         }
     }
 
-    func stopRecordingAndTranscribe(language: String) async throws -> String {
+    func stopRecordingAndTranscribe(language: String?) async throws -> String {
         stops += 1
         languages.append(language)
         return transcript
@@ -87,7 +87,7 @@ SWIFT
 
 swiftc \
     -parse-as-library \
-    "$repo_root/Sources/GlideBoard/DictationController.swift" \
+    "$repo_root/Sources/GlideBoardCore/DictationController.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/dictation-controller"
 

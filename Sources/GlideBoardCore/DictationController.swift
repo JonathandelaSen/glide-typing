@@ -26,9 +26,11 @@ enum DictationState: Equatable {
 }
 
 enum DictationInsertion {
-    static func text(transcript: String, existingText: String) -> String {
+    static func text(transcript: String, existingText: String,
+                     replacingSelection: Bool = false) -> String {
         let cleaned = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return "" }
+        guard !replacingSelection else { return cleaned }
         guard let last = existingText.last, !last.isWhitespace else { return cleaned }
         return " " + cleaned
     }
@@ -38,6 +40,7 @@ enum DictationInsertion {
 final class DictationController {
     private let engine: DictationEngine
     private let language: () -> String?
+    private let willStart: () -> Void
     private let output: (String) -> Void
     private let stateChanged: (DictationState) -> Void
     private var releaseRequested = false
@@ -48,17 +51,20 @@ final class DictationController {
 
     init(engine: DictationEngine,
          language: @escaping () -> String?,
+         willStart: @escaping () -> Void = {},
          output: @escaping (String) -> Void,
          stateChanged: @escaping (DictationState) -> Void)
     {
         self.engine = engine
         self.language = language
+        self.willStart = willStart
         self.output = output
         self.stateChanged = stateChanged
     }
 
     func press() async {
         guard state == .idle || isFailure else { return }
+        willStart()
         releaseRequested = false
         state = .preparing
         do {
