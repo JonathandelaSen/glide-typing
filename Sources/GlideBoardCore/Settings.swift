@@ -52,6 +52,17 @@ enum Settings {
         set { defaults.set(NSNumber(value: newValue), forKey: "transformHotKeyModifiers") }
     }
 
+    /// Hotkey to send the composer draft to the focused app.
+    static var sendHotKeyCode: UInt32 {
+        get { (defaults.object(forKey: "sendHotKeyCode") as? NSNumber)?.uint32Value ?? UInt32(kVK_Return) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "sendHotKeyCode") }
+    }
+
+    static var sendHotKeyModifiers: UInt32 {
+        get { (defaults.object(forKey: "sendHotKeyModifiers") as? NSNumber)?.uint32Value ?? UInt32(cmdKey) }
+        set { defaults.set(NSNumber(value: newValue), forKey: "sendHotKeyModifiers") }
+    }
+
     /// Push-to-talk shortcut for local WhisperKit dictation.
     static var dictationHotKeyCode: UInt32 {
         get { (defaults.object(forKey: "dictationHotKeyCode") as? NSNumber)?.uint32Value ?? UInt32(kVK_Space) }

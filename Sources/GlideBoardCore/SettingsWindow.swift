@@ -58,6 +58,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onFocusHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onTransformHotKeyChange: ((UInt32, UInt32) -> Void)?
+    var onSendHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationModelChange: (() -> Void)?
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
@@ -123,6 +124,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             Settings.transformHotKeyCode = code
             Settings.transformHotKeyModifiers = mods
             self?.onTransformHotKeyChange?(code, mods)
+        }
+
+        let sendShortcutField = ShortcutField(keyCode: Settings.sendHotKeyCode,
+                                              carbonMods: Settings.sendHotKeyModifiers)
+        sendShortcutField.onChange = { [weak self] code, mods in
+            Settings.sendHotKeyCode = code
+            Settings.sendHotKeyModifiers = mods
+            self?.onSendHotKeyChange?(code, mods)
         }
 
         languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -212,6 +221,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [makeLabel("Atajo escribir en borrador:"), focusShortcutField],
             [makeLabel("Atajo dictado (mantener):"), dictationShortcutField],
             [makeLabel("Atajo transformar/instrucción:"), transformShortcutField],
+            [makeLabel("Atajo enviar borrador:"), sendShortcutField],
             [makeLabel("Idioma:"), languagePopup],
             [makeLabel("Tamaño del teclado:"), slider, scaleLabel],
             [makeLabel("Opacidad del teclado:"), opacitySlider, opacityLabel],
