@@ -247,19 +247,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         }
     }
 
-    /// Global send command: deliver the composer draft to the focused app
-    /// without touching the mouse, from anywhere.
+    /// Global send command: deliver the composer draft to the focused app and
+    /// submit it, without touching the mouse. With an empty draft it still
+    /// forwards Return so the target app can publish its current input.
     private func sendComposerFromHotKey() {
-        guard composerEnabled, !composerText.isEmpty else {
+        guard composerEnabled else {
             if panel.isVisible {
-                keyboardView.flash(composerEnabled ? "Nada que enviar" : "Activa el área de borrador")
+                keyboardView.flash("Activa el área de borrador")
             } else {
                 NSSound.beep()
             }
             return
         }
         if panel.isVisible { keyboardView.flash("↪") }
-        flushComposerToApp(pressReturn: false)
+        flushComposerToApp(
+            pressReturn: ComposerDeliveryIntent.globalSend(draft: composerText).pressReturn
+        )
     }
 
     private func applyDictationHotKey() {
@@ -821,6 +824,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             retry()
             return
         }
+        if TextInjector.physicalModifiersDown {
+            // The send hotkey fires on key *down*, so the user is still
+            // holding ⌘ (or whatever modifiers the shortcut uses). Keystrokes
+            // injected now would combine with those held modifiers — the
+            // synthetic Return could even re-trigger our own hotkey. Wait for
+            // the fingers to lift.
+            retry()
+            return
+        }
         switch FocusedFieldReader.textTargetStatus(in: target) {
         case .editable, .unknown:
             break
@@ -1369,7 +1381,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                 // so you can review or keep composing. With an empty buffer:
                 // forward a plain Return to submit in the target app without
                 // leaving the keyboard.
-                flushComposerToApp(pressReturn: composerText.isEmpty)
+                flushComposerToApp(
+                    pressReturn: ComposerDeliveryIntent.boardReturn(draft: composerText).pressReturn
+                )
             } else {
                 TextInjector.pressKey(TextInjector.returnKey)
                 resetInsertionState()
