@@ -247,9 +247,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         }
     }
 
-    /// Global send command: deliver the composer draft to the focused app and
-    /// submit it, without touching the mouse. With an empty draft it still
-    /// forwards Return so the target app can publish its current input.
+    /// Global send command: same two-step gesture as the board's Return key,
+    /// without touching the mouse. With a draft it only inserts it into the
+    /// focused app for review; pressed again on the now-empty draft it
+    /// forwards Return so the target submits.
     private func sendComposerFromHotKey() {
         guard composerEnabled else {
             if panel.isVisible {
@@ -259,9 +260,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             }
             return
         }
-        if panel.isVisible { keyboardView.flash("↪") }
         flushComposerToApp(
-            pressReturn: ComposerDeliveryIntent.globalSend(draft: composerText).pressReturn
+            pressReturn: ComposerDeliveryIntent.send(draft: composerText).pressReturn
         )
     }
 
@@ -750,10 +750,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             // keyboard events to the key panel, so the synthetic keystrokes
             // would come back to us and vanish. Dropping first responder is
             // not enough: the panel must leave the screen for key focus to
-            // return to the target. It reappears when delivery settles.
+            // return to the target. Re-adding it in the same turn keeps the
+            // handoff (the re-shown panel takes no key status) without the
+            // visible blink of hiding it for the whole delivery.
             panel.makeFirstResponder(nil)
             panel.orderOut(nil)
-            panelHiddenForDelivery = true
+            panel.orderFrontRegardless()
         }
         target.activate()
         deliverComposer(text, pressReturn: pressReturn, attemptsRemaining: 12)
@@ -821,6 +823,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             return
         }
         if FocusedFieldReader.systemFocusPid() == ProcessInfo.processInfo.processIdentifier {
+            if attemptsRemaining <= 9, !panelHiddenForDelivery {
+                // The blink-free handoff didn't move system focus back to the
+                // target on this system. Fall back to really hiding the panel
+                // until delivery settles — the one gesture the window server
+                // always honors.
+                panel.makeFirstResponder(nil)
+                panel.orderOut(nil)
+                panelHiddenForDelivery = true
+            }
             retry()
             return
         }
@@ -1383,7 +1394,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                 // forward a plain Return to submit in the target app without
                 // leaving the keyboard.
                 flushComposerToApp(
-                    pressReturn: ComposerDeliveryIntent.boardReturn(draft: composerText).pressReturn
+                    pressReturn: ComposerDeliveryIntent.send(draft: composerText).pressReturn
                 )
             } else {
                 TextInjector.pressKey(TextInjector.returnKey)

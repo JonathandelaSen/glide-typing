@@ -7,17 +7,12 @@ func composerDeliveryChecks() async {
     let c = Checks.shared
     c.begin("Composer delivery")
 
-    await c.test("global send submits a populated draft after inserting it") {
-        try expectEqual(ComposerDeliveryIntent.globalSend(draft: "Hola"), .insertAndSubmit)
+    await c.test("sending a populated draft only inserts it for review") {
+        try expectEqual(ComposerDeliveryIntent.send(draft: "Hola"), .insertOnly)
     }
 
-    await c.test("global send submits even when the draft is empty") {
-        try expectEqual(ComposerDeliveryIntent.globalSend(draft: ""), .insertAndSubmit)
-    }
-
-    await c.test("the board Return key only submits an empty draft") {
-        try expectEqual(ComposerDeliveryIntent.boardReturn(draft: "Hola"), .insertOnly)
-        try expectEqual(ComposerDeliveryIntent.boardReturn(draft: ""), .insertAndSubmit)
+    await c.test("sending an empty draft forwards Return to submit") {
+        try expectEqual(ComposerDeliveryIntent.send(draft: ""), .insertAndSubmit)
     }
 
     await c.test("hotkey modifiers still held postpone injection") {

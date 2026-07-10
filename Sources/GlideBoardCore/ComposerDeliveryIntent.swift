@@ -6,18 +6,11 @@ enum ComposerDeliveryIntent: Equatable {
     case insertOnly
     case insertAndSubmit
 
-    /// The global send shortcut is an explicit "send" action. It must submit
-    /// after inserting a draft, and still submit when the draft is empty.
-    static func globalSend(draft: String) -> Self {
-        // The draft is deliberately accepted here so callers make the empty
-        // draft case explicit in the same decision point.
-        _ = draft
-        return .insertAndSubmit
-    }
-
-    /// The Return key on the board keeps the existing two-step behavior: the
-    /// first Return inserts a draft; a Return on an empty draft submits it.
-    static func boardReturn(draft: String) -> Self {
+    /// Sending is a two-step gesture everywhere — global hotkey and board
+    /// Return alike. With a draft, only insert it into the target so it can
+    /// be reviewed before committing; on an empty draft, forward Return so
+    /// the target submits what was already inserted.
+    static func send(draft: String) -> Self {
         draft.isEmpty ? .insertAndSubmit : .insertOnly
     }
 
