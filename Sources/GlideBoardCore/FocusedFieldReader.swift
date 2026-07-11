@@ -53,7 +53,8 @@ enum FocusedFieldReader {
     ]
 
     static func isEditableTextTarget(role: String?, supportsTextSelection: Bool,
-                                     hasEditableAncestor: Bool = false) -> Bool {
+                                     hasEditableAncestor: Bool = false,
+                                     isChromiumNode: Bool = false) -> Bool {
         // Chromium marks focused nodes inside inputs/contenteditable with
         // AXEditableAncestor; that beats whatever role the node reports.
         if hasEditableAncestor { return true }
@@ -63,14 +64,20 @@ enum FocusedFieldReader {
             || role == (kAXComboBoxRole as String) {
             return true
         }
+        // Chromium answers AXSelectedTextRange on *every* node — menu items,
+        // buttons, the page itself — so for its nodes selection support
+        // proves nothing: only the positive signals above count.
+        if isChromiumNode { return false }
         return supportsTextSelection && !selectableContainerRoles.contains(role)
     }
 
     static func textTargetStatus(role: String?, supportsTextSelection: Bool,
-                                 hasEditableAncestor: Bool = false) -> TextTargetStatus {
+                                 hasEditableAncestor: Bool = false,
+                                 isChromiumNode: Bool = false) -> TextTargetStatus {
         guard let role else { return .unknown }
         return isEditableTextTarget(role: role, supportsTextSelection: supportsTextSelection,
-                                    hasEditableAncestor: hasEditableAncestor)
+                                    hasEditableAncestor: hasEditableAncestor,
+                                    isChromiumNode: isChromiumNode)
             ? .editable
             : .notEditable
     }
@@ -82,6 +89,15 @@ enum FocusedFieldReader {
         var ref: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, "AXEditableAncestor" as CFString,
                                              &ref) == .success && ref != nil
+    }
+
+    /// Chromium and Electron tag every rendered node with its renderer id;
+    /// its presence tells us the element follows Chromium's AX semantics.
+    static func elementIsChromiumNode(_ element: AXUIElement) -> Bool {
+        var names: CFArray?
+        guard AXUIElementCopyAttributeNames(element, &names) == .success,
+              let list = names as? [String] else { return false }
+        return list.contains("ChromeAXNodeId")
     }
 
     /// Ask an app to build its accessibility tree ahead of need — Electron
@@ -116,7 +132,8 @@ enum FocusedFieldReader {
         ) == .success
         return textTargetStatus(role: roleRef as? String,
                                 supportsTextSelection: supportsTextSelection,
-                                hasEditableAncestor: elementHasEditableAncestor(element))
+                                hasEditableAncestor: elementHasEditableAncestor(element),
+                                isChromiumNode: elementIsChromiumNode(element))
     }
 
     static func hasEditableTextTarget(in app: NSRunningApplication?) -> Bool {

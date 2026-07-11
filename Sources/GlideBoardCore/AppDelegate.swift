@@ -314,6 +314,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                                                     existingText: textBeforeSelection,
                                                     replacingSelection: target.replacesSelection)
             guard !insertion.isEmpty else { return }
+            DictationLog.write("inserción: en el borrador (destino borrador)")
             insertDictationIntoComposer(insertion, selection: selection, reveal: false)
             finishDictationDelivery(destination: target.destinationName, sessionID: sessionID)
         case .external(let external):
@@ -356,7 +357,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         case .failed(let message):
             setStatusIcon("keyboard", description: "GlideBoard")
             keyboardView.flash(message)
-            NSLog("GlideBoard dictation: %@", message)
+            DictationLog.write("fallo: \(message)")
             dictationDeliveryInProgress = false
             dictationTarget = nil
             restoreDictationPanel()
@@ -377,19 +378,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             dictationTarget = .composer(selection: NSRange(location: location,
                                                             length: min(selection.length, text.length - location)),
                                               textBeforeSelection: text.substring(to: location))
+            DictationLog.write("captura: borrador (el panel tiene el foco)")
             return
         }
 
         let frontmost = NSWorkspace.shared.frontmostApplication
-        if let external = CapturedTextTarget.capture(in: frontmost) {
+        let (external, detail) = CapturedTextTarget.capture(in: frontmost)
+        if let external {
             dictationTarget = .external(external)
             lastExternalApp = external.app
-            NSLog("GlideBoard dictation: destino %@ (campo editable enfocado)",
-                  external.app.localizedName ?? "?")
+            DictationLog.write("captura: externo — \(detail)")
         } else {
             dictationTarget = .fallback
-            NSLog("GlideBoard dictation: sin campo editable en %@ — el borrador recibirá el texto",
-                  frontmost?.localizedName ?? "ninguna app")
+            DictationLog.write("captura: borrador (fallback) — \(detail)")
         }
     }
 
@@ -427,6 +428,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                                                 existingText: text.substring(to: location),
                                                 replacingSelection: selection.length > 0)
         guard !insertion.isEmpty else { return }
+        DictationLog.write("inserción: en el borrador, revelando el teclado")
         insertDictationIntoComposer(insertion,
                                     selection: NSRange(location: location,
                                                        length: min(selection.length, text.length - location)),
@@ -448,16 +450,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                                           sessionID: Int) {
         guard sessionID == dictationSessionID else { return }
         guard !target.app.isTerminated else {
-            NSLog("GlideBoard dictation: %@ terminó — el borrador recibe el texto",
-                  target.app.localizedName ?? "la app destino")
+            DictationLog.write("entrega: \(target.app.localizedName ?? "la app destino") terminó — al borrador")
             dictationDeliveryInProgress = false
             restoreDictationPanel()
             insertDictationFallback(rawTranscript, sessionID: sessionID)
             return
         }
         guard attemptsRemaining > 0 else {
-            NSLog("GlideBoard dictation: no se pudo entregar a %@ — el borrador recibe el texto",
-                  target.app.localizedName ?? "?")
+            DictationLog.write("entrega: agotados los intentos con \(target.app.localizedName ?? "?") — al borrador")
             dictationDeliveryInProgress = false
             restoreDictationPanel()
             insertDictationFallback(rawTranscript, sessionID: sessionID)
@@ -474,6 +474,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         // per-app AX focus lie while our nonactivating panel holds key status,
         // and synthetic keystrokes follow the *system* keyboard focus.
         guard target.app.isActive else {
+            DictationLog.write("entrega: \(target.app.localizedName ?? "?") no activa aún — reintento \(attemptsRemaining)")
             target.app.activate()
             retry()
             return
@@ -482,6 +483,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             // Blink-free handoff: the panel must leave the screen for key
             // status to return to the target; re-adding it in the same turn
             // keeps it visible without reclaiming key.
+            DictationLog.write("entrega: el panel retiene el foco — cesión sin parpadeo, reintento \(attemptsRemaining)")
             panel.makeFirstResponder(nil)
             panel.orderOut(nil)
             panel.orderFrontRegardless()
@@ -489,6 +491,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             return
         }
         if FocusedFieldReader.systemFocusPid() == ProcessInfo.processInfo.processIdentifier {
+            DictationLog.write("entrega: el foco del sistema sigue en GlideBoard — reintento \(attemptsRemaining)")
             if attemptsRemaining <= 9, panel.isVisible, !dictationPanelHidden {
                 // The handoff didn't move system focus back to the target:
                 // really hide the panel until the delivery settles.
@@ -502,25 +505,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         if TextInjector.physicalModifiersDown {
             // A finger still holds the dictation shortcut's modifiers; typed
             // now, the text would arrive as key equivalents and vanish.
+            DictationLog.write("entrega: modificadores aún pulsados — reintento \(attemptsRemaining)")
             retry()
             return
         }
 
-        // AX replacement is exact and keeps the user's text intact. Chromium
-        // editors often reject it, so restore the saved selection then type.
-        if target.replaceSelection(with: insertion) {
-            NSLog("GlideBoard dictation: insertado por AX en %@", target.app.localizedName ?? "?")
-            noteDictationInsertion(insertion)
-            finishDictationDelivery(destination: target.app.localizedName ?? "la aplicación",
-                                    sessionID: sessionID)
-            return
-        }
+        // Typing is the one delivery mechanism the composer flow has proven
+        // in every target app. The AX text-replacement fast path is gone: web
+        // editors report success without applying it, losing the transcript.
         guard target.prepareForInsertion() else {
             retry()
             return
         }
         TextInjector.type(insertion)
-        NSLog("GlideBoard dictation: tecleado en %@", target.app.localizedName ?? "?")
+        DictationLog.write("entrega: tecleado en \(target.app.localizedName ?? "?") (\(insertion.count) caracteres)")
         noteDictationInsertion(insertion)
         finishDictationDelivery(destination: target.app.localizedName ?? "la aplicación",
                                 sessionID: sessionID)

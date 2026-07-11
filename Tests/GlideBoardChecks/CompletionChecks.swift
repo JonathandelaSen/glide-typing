@@ -65,6 +65,33 @@ func completionChecks() async {
             role: "AXCustomEditor", supportsTextSelection: true))
     }
 
+    await c.test("Chromium nodes never editable by selection range alone") {
+        // Chromium answers AXSelectedTextRange on every node — a focused
+        // menu item in an Electron app must not become a dictation target.
+        try expectFalse(FocusedFieldReader.isEditableTextTarget(
+            role: "AXMenuItem", supportsTextSelection: true, isChromiumNode: true))
+        try expectFalse(FocusedFieldReader.isEditableTextTarget(
+            role: "AXCustomEditor", supportsTextSelection: true, isChromiumNode: true))
+        // Positive signals still win: real inputs and contenteditable content.
+        try expectTrue(FocusedFieldReader.isEditableTextTarget(
+            role: kAXTextAreaRole as String, supportsTextSelection: true,
+            isChromiumNode: true))
+        try expectTrue(FocusedFieldReader.isEditableTextTarget(
+            role: kAXGroupRole as String, supportsTextSelection: true,
+            hasEditableAncestor: true, isChromiumNode: true))
+    }
+
+    await c.test("dictation log appends versioned timestamped lines") {
+        let marker = "check-\(UUID().uuidString)"
+        DictationLog.write(marker)
+        let contents = (try? String(contentsOf: DictationLog.url, encoding: .utf8)) ?? ""
+        guard let line = contents.split(separator: "\n").last(where: { $0.contains(marker) }) else {
+            throw CheckFailure(message: "marker line missing from dictation log",
+                               location: #fileID)
+        }
+        try expectTrue(line.contains("[v\(BuildVersion.code)]"))
+    }
+
     await c.test("unknown targets still allow an insertion attempt") {
         try expectTrue(FocusedFieldReader.TextTargetStatus.unknown.canAttemptInsertion)
         try expectTrue(FocusedFieldReader.textTargetStatus(

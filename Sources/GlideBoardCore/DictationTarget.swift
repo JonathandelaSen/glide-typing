@@ -55,35 +55,48 @@ final class CapturedTextTarget {
         self.textBeforeSelection = textBeforeSelection
     }
 
-    static func capture(in app: NSRunningApplication?) -> CapturedTextTarget? {
+    /// `detail` describes what was found either way, for the dictation log.
+    static func capture(in app: NSRunningApplication?) -> (target: CapturedTextTarget?, detail: String) {
         guard let app, !app.isTerminated,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            return (nil, "sin app externa activa")
+        }
+        let name = app.localizedName ?? "pid \(app.processIdentifier)"
 
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 
         var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement,
-                                            kAXFocusedUIElementAttribute as CFString,
-                                            &focusedRef) == .success,
-              let focusedRef else { return nil }
+        let focusErr = AXUIElementCopyAttributeValue(appElement,
+                                                     kAXFocusedUIElementAttribute as CFString,
+                                                     &focusedRef)
+        guard focusErr == .success, let focusedRef else {
+            return (nil, "\(name): sin elemento enfocado (AXError \(focusErr.rawValue))")
+        }
         let element = focusedRef as! AXUIElement
 
         var roleRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString,
                                             &roleRef) == .success,
-              let role = roleRef as? String else { return nil }
+              let role = roleRef as? String else {
+            return (nil, "\(name): elemento enfocado sin rol")
+        }
 
         var rangeRef: CFTypeRef?
         let hasSelectionRange = AXUIElementCopyAttributeValue(
             element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
         ) == .success
+        let hasEditableAncestor = FocusedFieldReader.elementHasEditableAncestor(element)
+        let isChromium = FocusedFieldReader.elementIsChromiumNode(element)
+        let facts = "\(name): rol \(role), rango \(hasSelectionRange), " +
+                    "editableAncestor \(hasEditableAncestor), chromium \(isChromium)"
         guard FocusedFieldReader.isEditableTextTarget(
             role: role,
             supportsTextSelection: hasSelectionRange,
-            hasEditableAncestor: FocusedFieldReader.elementHasEditableAncestor(element)
+            hasEditableAncestor: hasEditableAncestor,
+            isChromiumNode: isChromium
         ) else {
-            return nil
+            return (nil, "\(facts) — no editable")
         }
 
         var subroleRef: CFTypeRef?
@@ -91,40 +104,33 @@ final class CapturedTextTarget {
                                          &subroleRef) == .success,
            let subrole = subroleRef as? String,
            subrole == (kAXSecureTextFieldSubrole as String) {
-            return nil
+            return (nil, "\(facts) — campo seguro, vetado")
         }
 
         let selection = selectionRange(from: rangeRef)
         let textBeforeSelection = textBeforeSelection(in: element, selection: selection)
-        return CapturedTextTarget(app: app, element: element, selection: selection,
-                                  textBeforeSelection: textBeforeSelection)
+        return (CapturedTextTarget(app: app, element: element, selection: selection,
+                                   textBeforeSelection: textBeforeSelection), facts)
     }
 
     /// Restore the original field and selection. The caller must activate the
     /// owning app first; doing this while it is backgrounded is unreliable in
-    /// both AppKit and Electron applications.
+    /// both AppKit and Electron applications. The selection restore is
+    /// best-effort: an editor that rejects it still gets the text at its
+    /// current caret, which beats dumping the transcript to the board.
     func prepareForInsertion() -> Bool {
         guard !app.isTerminated else { return false }
         AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard let selection else { return true }
         var range = selection
-        guard let value = AXValueCreate(.cfRange, &range) else { return false }
-        return AXUIElementSetAttributeValue(element,
-                                            kAXSelectedTextRangeAttribute as CFString,
-                                            value) == .success
-    }
-
-    /// Prefer the accessibility replacement API: it replaces only the saved
-    /// selection and does not touch the rest of the field. Some web editors
-    /// reject this attribute, in which case the caller falls back to typing.
-    func replaceSelection(with text: String) -> Bool {
-        guard prepareForInsertion() else { return false }
-        var settable = DarwinBoolean(false)
-        guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString,
-                                              &settable) == .success,
-              settable.boolValue else { return false }
-        return AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString,
-                                            text as CFString) == .success
+        if let value = AXValueCreate(.cfRange, &range),
+           AXUIElementSetAttributeValue(element,
+                                        kAXSelectedTextRangeAttribute as CFString,
+                                        value) == .success {
+            return true
+        }
+        DictationLog.write("selección no restaurada en \(app.localizedName ?? "?") — se teclea en el caret actual")
+        return true
     }
 
     private static func selectionRange(from value: CFTypeRef?) -> CFRange? {
