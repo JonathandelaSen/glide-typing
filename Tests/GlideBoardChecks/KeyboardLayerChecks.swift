@@ -23,6 +23,7 @@ private final class TapSpy: NSObject, KeyboardViewDelegate {
     func keyboardViewDidResize(_ view: KeyboardView) {}
     func keyboardViewDidToggleHistory(_ view: KeyboardView) {}
     func keyboardViewDidToggleDictation(_ view: KeyboardView) {}
+    func keyboardViewDidRequestClose(_ view: KeyboardView) {}
 }
 
 @MainActor

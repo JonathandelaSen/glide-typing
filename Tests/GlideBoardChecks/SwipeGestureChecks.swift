@@ -29,6 +29,7 @@ private final class FlickSpy: NSObject, KeyboardViewDelegate {
     func keyboardViewDidResize(_ view: KeyboardView) {}
     func keyboardViewDidToggleHistory(_ view: KeyboardView) {}
     func keyboardViewDidToggleDictation(_ view: KeyboardView) { dictationToggleCount += 1 }
+    func keyboardViewDidRequestClose(_ view: KeyboardView) {}
 }
 
 @MainActor

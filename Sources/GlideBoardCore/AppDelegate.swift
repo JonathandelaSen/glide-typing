@@ -1387,6 +1387,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         toggleDictation()
     }
 
+    func keyboardViewDidRequestClose(_ view: KeyboardView) {
+        hidePanel()
+    }
+
     func keyboardView(_ view: KeyboardView, didRepeatBackspaceByWord byWord: Bool) {
         if byWord {
             emitBackspaceWord()

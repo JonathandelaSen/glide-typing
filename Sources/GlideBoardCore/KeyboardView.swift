@@ -33,6 +33,8 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardViewDidToggleHistory(_ view: KeyboardView)
     /// Start or finish local WhisperKit dictation from the toolbar button.
     func keyboardViewDidToggleDictation(_ view: KeyboardView)
+    /// Hide the floating board from its window-style close control.
+    func keyboardViewDidRequestClose(_ view: KeyboardView)
 }
 
 /// Two-finger swipe directions and their shortcut actions.
@@ -328,10 +330,16 @@ final class KeyboardView: NSView {
         didSet { if oldValue != dictationState { needsDisplay = true } }
     }
 
-    /// Toolbar buttons, laid out with the shared uiScale so they stay legible
-    /// at any keyboard size.
-    private var toolbarButtonSize: CGSize { CGSize(width: 34 * uiScale, height: 22 * uiScale) }
+    /// Compact window-chrome controls. The close action lives at the standard
+    /// macOS leading edge; secondary tools form one quiet cluster at the end.
+    private var toolbarButtonSize: CGSize { CGSize(width: 28 * uiScale, height: 22 * uiScale) }
     private var toolbarButtonY: CGFloat { (barHeight - toolbarButtonSize.height) / 2 }
+
+    private var closeButtonRect: CGRect {
+        let s = toolbarButtonSize
+        return CGRect(x: KeyboardView.margin, y: toolbarButtonY,
+                      width: s.width, height: s.height)
+    }
 
     private var helpButtonRect: CGRect {
         let s = toolbarButtonSize
@@ -341,13 +349,13 @@ final class KeyboardView: NSView {
 
     private var historyButtonRect: CGRect {
         let s = toolbarButtonSize
-        return CGRect(x: helpButtonRect.minX - s.width - 6 * uiScale,
+        return CGRect(x: helpButtonRect.minX - s.width - 2 * uiScale,
                       y: toolbarButtonY, width: s.width, height: s.height)
     }
 
     private var dictationButtonRect: CGRect {
         let s = toolbarButtonSize
-        return CGRect(x: modeButtonRect.maxX + 6 * uiScale,
+        return CGRect(x: historyButtonRect.minX - s.width - 2 * uiScale,
                       y: toolbarButtonY, width: s.width, height: s.height)
     }
 
@@ -609,6 +617,11 @@ final class KeyboardView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+
+        if closeButtonRect.insetBy(dx: -4, dy: -4).contains(p) && !showHelp {
+            delegate?.keyboardViewDidRequestClose(self)
+            return
+        }
 
         // Mode switch (tap ↔ drag) in the handle strip.
         if modeButtonRect.insetBy(dx: -4, dy: -4).contains(p) && !showHelp {
@@ -978,7 +991,8 @@ final class KeyboardView: NSView {
 
     private var modeButtonRect: CGRect {
         let s = toolbarButtonSize
-        return CGRect(x: KeyboardView.margin, y: toolbarButtonY, width: s.width, height: s.height)
+        return CGRect(x: dictationButtonRect.minX - s.width - 2 * uiScale,
+                      y: toolbarButtonY, width: s.width, height: s.height)
     }
 
     private func toggleInputMode() {
@@ -1340,6 +1354,7 @@ final class KeyboardView: NSView {
 
         drawAltPopover()
 
+        drawCloseButton()
         drawHelpButton()
         drawHistoryButton()
         drawDictationButton()
@@ -1347,24 +1362,48 @@ final class KeyboardView: NSView {
         if showHelp { drawHelpOverlay() }
     }
 
-    /// Shared pill style for the toolbar-strip buttons.
-    private func drawToolbarButton(in rect: CGRect, symbol: String, active: Bool,
+    /// Quiet, native-feeling toolbar control. Idle actions have no individual
+    /// pill; stateful actions gain a compact highlight only while active.
+    private func drawToolbarButton(in rect: CGRect, symbolName: String, active: Bool,
                                    activeColor: NSColor? = nil) {
         if active {
-            (activeColor ?? NSColor(calibratedRed: 0.24, green: 0.34, blue: 0.5, alpha: 1)).setFill()
-        } else {
-            NSColor(calibratedWhite: 0.22, alpha: 1).setFill()
+            (activeColor ?? NSColor(calibratedRed: 0.22, green: 0.38, blue: 0.66, alpha: 0.72)).setFill()
+            NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 1),
+                         xRadius: 6 * uiScale, yRadius: 6 * uiScale).fill()
         }
-        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13 * uiScale, weight: .semibold),
-            .foregroundColor: active
-                ? NSColor(calibratedRed: 0.75, green: 0.87, blue: 1.0, alpha: 1)
-                : NSColor(calibratedRed: 0.6, green: 0.78, blue: 1.0, alpha: 1)
-        ]
-        let s = NSAttributedString(string: symbol, attributes: attrs)
-        let size = s.size()
-        s.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+        drawSystemSymbol(symbolName, in: rect,
+                         color: active
+                            ? NSColor(calibratedRed: 0.83, green: 0.9, blue: 1, alpha: 1)
+                            : NSColor(calibratedWhite: 0.7, alpha: 1))
+    }
+
+    private func drawSystemSymbol(_ name: String, in rect: CGRect, color: NSColor,
+                                  pointSize: CGFloat = 12, weight: NSFont.Weight = .semibold) {
+        let configuration = NSImage.SymbolConfiguration(pointSize: pointSize * uiScale,
+                                                        weight: weight)
+        guard let source = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(configuration) else { return }
+        let image = NSImage(size: source.size)
+        image.lockFocus()
+        source.draw(at: .zero, from: .zero, operation: .sourceOver, fraction: 1)
+        color.setFill()
+        NSRect(origin: .zero, size: source.size).fill(using: .sourceAtop)
+        image.unlockFocus()
+        image.draw(at: CGPoint(x: rect.midX - image.size.width / 2,
+                               y: rect.midY - image.size.height / 2),
+                   from: .zero, operation: .sourceOver, fraction: 1)
+    }
+
+    private func drawCloseButton() {
+        let diameter = 12 * uiScale
+        let circle = CGRect(x: closeButtonRect.midX - diameter / 2,
+                            y: closeButtonRect.midY - diameter / 2,
+                            width: diameter, height: diameter)
+        NSColor(calibratedRed: 0.93, green: 0.31, blue: 0.28, alpha: 1).setFill()
+        NSBezierPath(ovalIn: circle).fill()
+        drawSystemSymbol("xmark", in: circle,
+                         color: NSColor(calibratedRed: 0.42, green: 0.08, blue: 0.07, alpha: 0.82),
+                         pointSize: 7, weight: .bold)
     }
 
     /// The old transient flash disappeared after 0.45 s. Dictation needs a
@@ -1380,8 +1419,8 @@ final class KeyboardView: NSView {
             return
         }
 
-        let left = dictationButtonRect.maxX + 10 * uiScale
-        let right = historyButtonRect.minX - 10 * uiScale
+        let left = closeButtonRect.maxX + 10 * uiScale
+        let right = modeButtonRect.minX - 10 * uiScale
         guard right > left else { return }
         let rect = CGRect(x: left, y: 4 * uiScale, width: right - left,
                           height: barHeight - 8 * uiScale)
@@ -1403,11 +1442,14 @@ final class KeyboardView: NSView {
     }
 
     private func drawModeButton() {
-        drawToolbarButton(in: modeButtonRect, symbol: hoverGlideEnabled ? "∿" : "●", active: false)
+        drawToolbarButton(in: modeButtonRect,
+                          symbolName: hoverGlideEnabled ? "scribble.variable" : "cursorarrow.click.2",
+                          active: hoverGlideEnabled)
     }
 
     private func drawHistoryButton() {
-        drawToolbarButton(in: historyButtonRect, symbol: "⟲", active: historyVisible)
+        drawToolbarButton(in: historyButtonRect, symbolName: "clock.arrow.circlepath",
+                          active: historyVisible)
     }
 
     private func drawDictationButton() {
@@ -1416,25 +1458,26 @@ final class KeyboardView: NSView {
         let color: NSColor?
         switch dictationState {
         case .idle:
-            (symbol, active, color) = ("🎙", false, nil)
+            (symbol, active, color) = ("mic", false, nil)
         case .preparing:
-            (symbol, active, color) = ("◉", true, nil)
+            (symbol, active, color) = ("waveform", true, nil)
         case .recording:
             (symbol, active, color) = (
-                "■", true,
+                "stop.fill", true,
                 NSColor(calibratedRed: 0.7, green: 0.18, blue: 0.2, alpha: 1)
             )
         case .transcribing:
-            (symbol, active, color) = ("…", true, nil)
+            (symbol, active, color) = ("ellipsis", true, nil)
         case .failed:
-            (symbol, active, color) = ("!", false, nil)
+            (symbol, active, color) = ("exclamationmark.triangle", false, nil)
         }
-        drawToolbarButton(in: dictationButtonRect, symbol: symbol,
+        drawToolbarButton(in: dictationButtonRect, symbolName: symbol,
                           active: active, activeColor: color)
     }
 
     private func drawHelpButton() {
-        drawToolbarButton(in: helpButtonRect, symbol: "?", active: showHelp)
+        drawToolbarButton(in: helpButtonRect, symbolName: "questionmark",
+                          active: showHelp)
     }
 
     private func drawHelpOverlay() {
