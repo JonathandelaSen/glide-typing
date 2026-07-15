@@ -28,6 +28,11 @@ struct GlideBoardChecksMain {
         await settingsChecks()
         await composerDeliveryChecks()
         await dictationChecks()
+        await voiceAttentionChecks()
+        await numaAudioChecks()
+        await numaStateMachineChecks()
+        await numaLifecycleChecks()
+        await numaPresentationChecks()
         await keyboardLayerChecks()
         await swipeGestureChecks()
 

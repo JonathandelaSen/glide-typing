@@ -2,27 +2,18 @@ import Foundation
 import Carbon
 @testable import GlideBoardCore
 
-private final class DictationEngineSpy: DictationEngine {
-    var startCount = 0
-    var stopCount = 0
-    var cancelCount = 0
-    var receivedLanguages: [String?] = []
-    var transcript = ""
-    var startError: Error?
+private final class DictationTranscriberSpy: DictationTranscribing {
+    var calls: [([Float], String?, Bool)] = []
+    var transcript = DictationTranscript(text: "", words: [])
+    var resume: CheckedContinuation<Void, Never>?
 
-    func startRecording() async throws {
-        startCount += 1
-        if let startError { throw startError }
-    }
-
-    func stopRecordingAndTranscribe(language: String?) async throws -> String {
-        stopCount += 1
-        receivedLanguages.append(language)
+    func transcribe(samples: [Float], language: String?,
+                    wordTimestamps: Bool) async throws -> DictationTranscript {
+        calls.append((samples, language, wordTimestamps))
+        if resume != nil {
+            await withCheckedContinuation { continuation in resume = continuation }
+        }
         return transcript
-    }
-
-    func cancelRecording() {
-        cancelCount += 1
     }
 }
 
@@ -31,142 +22,147 @@ func dictationChecks() async {
     let c = Checks.shared
     c.begin("Dictation")
 
-    await c.test("press starts recording and publishes the state sequence") {
-        let engine = DictationEngineSpy()
+    await c.test("prepare captures the target once and publishes mode") {
+        let transcriber = DictationTranscriberSpy()
+        var captured: [DictationSessionID] = []
         var states: [DictationState] = []
-        var targetSnapshots = 0
         let controller = DictationController(
-            engine: engine,
+            transcriber: transcriber,
             language: { "es" },
-            willStart: { targetSnapshots += 1 },
-            output: { _ in },
+            willStart: { captured.append($0) },
+            deliver: { _, _, completion in completion() },
             stateChanged: { states.append($0) }
         )
-        await controller.press()
-        try expectEqual(engine.startCount, 1)
-        try expectEqual(targetSnapshots, 1)
-        try expectEqual(controller.state, .recording)
-        try expectEqual(states, [.preparing, .recording])
+        try expectTrue(controller.prepare(sessionID: 10, mode: .pushToTalk,
+                                          source: .pushToTalk))
+        try expectFalse(controller.prepare(sessionID: 11, mode: .handsFree,
+                                           source: .button))
+        controller.recordingDidStart(sessionID: 10)
+        try expectEqual(captured, [10])
+        try expectEqual(states, [.preparing(.pushToTalk), .recording(.pushToTalk)])
     }
 
-    await c.test("release transcribes in the selected language, trimmed") {
-        let engine = DictationEngineSpy()
-        engine.transcript = "  Hola desde WhisperKit. \n"
-        var output: [String] = []
+    await c.test("stop transcribes a snapshot and waits for AppDelegate completion") {
+        let transcriber = DictationTranscriberSpy()
+        transcriber.transcript = DictationTranscript(text: "  Hola desde WhisperKit. \n", words: [])
+        var delivered: [String] = []
+        var finishDelivery: (() -> Void)?
         let controller = DictationController(
-            engine: engine,
+            transcriber: transcriber,
             language: { "es" },
-            output: { output.append($0) },
+            willStart: { _ in },
+            deliver: { _, text, completion in
+                delivered.append(text)
+                finishDelivery = completion
+            },
             stateChanged: { _ in }
         )
-        await controller.press()
-        await controller.release()
-        try expectEqual(engine.stopCount, 1)
-        try expectEqual(engine.receivedLanguages, ["es"])
-        try expectEqual(output, ["Hola desde WhisperKit."])
+        _ = controller.prepare(sessionID: 1, mode: .pushToTalk, source: .pushToTalk)
+        controller.recordingDidStart(sessionID: 1)
+        let task = Task { @MainActor in
+            await controller.stop(sessionID: 1, reason: .pushToTalkReleased,
+                                  samples: [0.1, 0.2])
+        }
+        for _ in 0..<20 where controller.state != .delivering(.pushToTalk) {
+            await Task.yield()
+        }
+        try expectEqual(controller.state, .delivering(.pushToTalk))
+        try expectEqual(delivered, ["Hola desde WhisperKit."])
+        finishDelivery?()
+        try expectEqual(await task.value, .delivered)
         try expectEqual(controller.state, .idle)
+        try expectEqual(transcriber.calls.count, 1)
+        try expectEqual(transcriber.calls[0].1, "es")
+        try expectFalse(transcriber.calls[0].2)
     }
 
-    await c.test("automatic dictation does not force the keyboard language") {
-        let engine = DictationEngineSpy()
-        engine.transcript = "Hola y thank you"
-        var output: [String] = []
+    await c.test("voice sessions request words and remove only their safe prefix") {
+        let transcriber = DictationTranscriberSpy()
+        transcriber.transcript = DictationTranscript(
+            text: "Numa, graba audio, mañana",
+            words: [
+                TranscribedWord(text: "Numa", start: 0, end: 0.2, textRangeUTF16: 0..<4),
+                TranscribedWord(text: "graba", start: 0.25, end: 0.5, textRangeUTF16: 6..<11),
+                TranscribedWord(text: "audio", start: 0.55, end: 0.8, textRangeUTF16: 12..<17),
+                TranscribedWord(text: "mañana", start: 0.9, end: 1.2, textRangeUTF16: 19..<25),
+            ]
+        )
+        let context = VoiceCommandContext(
+            audioReservationID: 1, wakeWordID: "numa",
+            sessionAudioStartSample: 0,
+            commandDetectionWindowStartSample: 0,
+            commandDetectionWindowEndSample: 13_000,
+            estimatedCommandEndSample: 13_000
+        )
+        var delivered = ""
         let controller = DictationController(
-            engine: engine,
-            language: { nil },
-            output: { output.append($0) },
+            transcriber: transcriber, language: { "es" }, willStart: { _ in },
+            deliver: { _, text, completion in delivered = text; completion() },
             stateChanged: { _ in }
         )
-        await controller.press()
-        await controller.release()
-        try expectEqual(engine.receivedLanguages, [nil])
-        try expectEqual(output, ["Hola y thank you"])
+        _ = controller.prepare(sessionID: 2, mode: .handsFree,
+                               source: .voiceCommand(context))
+        controller.recordingDidStart(sessionID: 2)
+        let outcome = await controller.stop(sessionID: 2, reason: .trailingSilence,
+                                            samples: [0.1])
+        try expectEqual(outcome, .delivered)
+        try expectEqual(delivered, "mañana")
+        try expectTrue(transcriber.calls[0].2)
     }
 
-    await c.test("long dictations split on silence and auto-detect only when requested") {
-        let automatic = DictationDecoding.options(language: nil)
-        try expectNil(automatic.language)
-        try expectTrue(automatic.detectLanguage)
-        try expectEqual(automatic.chunkingStrategy?.rawValue, "vad")
+    await c.test("unsafe voice prefix fails closed without delivery") {
+        let transcriber = DictationTranscriberSpy()
+        transcriber.transcript = DictationTranscript(text: "graba audio mañana", words: [])
+        let context = VoiceCommandContext(
+            audioReservationID: 1, wakeWordID: "numa",
+            sessionAudioStartSample: 0,
+            commandDetectionWindowStartSample: 0,
+            commandDetectionWindowEndSample: 10,
+            estimatedCommandEndSample: 10
+        )
+        var deliveries = 0
+        let controller = DictationController(
+            transcriber: transcriber, language: { "es" }, willStart: { _ in },
+            deliver: { _, _, completion in deliveries += 1; completion() },
+            stateChanged: { _ in }
+        )
+        _ = controller.prepare(sessionID: 3, mode: .handsFree,
+                               source: .voiceCommand(context))
+        controller.recordingDidStart(sessionID: 3)
+        try expectEqual(await controller.stop(sessionID: 3, reason: .trailingSilence,
+                                              samples: [0.1]), .unsafeVoicePrefix)
+        try expectEqual(deliveries, 0)
+    }
 
-        let spanish = DictationDecoding.options(language: "es")
-        try expectEqual(spanish.language, "es")
-        try expectFalse(spanish.detectLanguage)
+    await c.test("stale session callbacks do not change the active session") {
+        let controller = DictationController(
+            transcriber: DictationTranscriberSpy(), language: { nil }, willStart: { _ in },
+            deliver: { _, _, completion in completion() }, stateChanged: { _ in }
+        )
+        _ = controller.prepare(sessionID: 4, mode: .handsFree, source: .button)
+        controller.recordingDidStart(sessionID: 999)
+        controller.cancel(sessionID: 999)
+        try expectEqual(controller.state, .preparing(.handsFree))
+        controller.cancel(sessionID: 4)
+        try expectEqual(controller.state, .idle)
     }
 
     await c.test("dictation status stays explicit while work is in progress") {
-        try expectEqual(DictationState.preparing.statusText, "Preparando micrófono…")
-        try expectEqual(DictationState.recording.statusText,
-                        "Grabando · termina con el atajo o 🎙")
-        try expectEqual(DictationState.transcribing.statusText, "Transcribiendo localmente…")
+        try expectEqual(DictationState.preparing(.pushToTalk).statusText, "Preparando micrófono…")
+        try expectEqual(DictationState.recording(.handsFree).statusText,
+                        "Grabando · termina con ⌥L, menú o 🎙")
+        try expectEqual(DictationState.transcribing(.handsFree).statusText,
+                        "Transcribiendo localmente…")
         try expectNil(DictationState.idle.statusText)
     }
 
-    await c.test("an empty transcript emits nothing") {
-        let engine = DictationEngineSpy()
-        engine.transcript = " \n "
-        var output: [String] = []
-        let controller = DictationController(
-            engine: engine,
-            language: { "en" },
-            output: { output.append($0) },
-            stateChanged: { _ in }
-        )
-        await controller.press()
-        await controller.release()
-        try expectTrue(output.isEmpty)
-        try expectEqual(controller.state, .idle)
-    }
-
-    await c.test("a failed start cancels the engine and reports failure") {
-        let engine = DictationEngineSpy()
-        engine.startError = NSError(domain: "mic", code: 1)
-        let controller = DictationController(
-            engine: engine,
-            language: { "es" },
-            output: { _ in },
-            stateChanged: { _ in }
-        )
-        await controller.press()
-        try expectEqual(engine.cancelCount, 1)
-        if case .failed = controller.state {} else {
-            throw CheckFailure(message: "expected .failed, got \(controller.state)",
-                               location: #fileID)
-        }
-        // A failed controller accepts a new press.
-        engine.startError = nil
-        await controller.press()
-        try expectEqual(controller.state, .recording)
-    }
-
-    await c.test("cancel returns to idle and stops the engine") {
-        let engine = DictationEngineSpy()
-        let controller = DictationController(
-            engine: engine,
-            language: { "es" },
-            output: { _ in },
-            stateChanged: { _ in }
-        )
-        await controller.press()
-        controller.cancel()
-        try expectEqual(engine.cancelCount, 1)
-        try expectEqual(controller.state, .idle)
-    }
-
     await c.test("insertion adds a separator only after unspaced draft text") {
-        try expectEqual(DictationInsertion.text(transcript: "nuevo texto",
-                                                existingText: "borrador"),
+        try expectEqual(DictationInsertion.text(transcript: "nuevo texto", existingText: "borrador"),
                         " nuevo texto")
-        try expectEqual(DictationInsertion.text(transcript: "nuevo texto",
-                                                existingText: "borrador "),
+        try expectEqual(DictationInsertion.text(transcript: "nuevo texto", existingText: "borrador "),
                         "nuevo texto")
-        try expectEqual(DictationInsertion.text(transcript: "nuevo texto",
-                                                existingText: ""),
-                        "nuevo texto")
-        try expectEqual(DictationInsertion.text(transcript: "nuevo texto",
-                                                existingText: "borrador",
-                                                replacingSelection: true),
-                        "nuevo texto")
+        try expectEqual(DictationInsertion.text(transcript: "nuevo texto", existingText: "",
+                                                replacingSelection: true), "nuevo texto")
         try expectEqual(DictationInsertion.text(transcript: "  ", existingText: "x"), "")
     }
 

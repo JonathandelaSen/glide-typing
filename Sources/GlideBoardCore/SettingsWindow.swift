@@ -59,7 +59,7 @@ private final class SettingsTabViewController: NSTabViewController {
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         super.tabView(tabView, didSelect: tabViewItem)
         if let label = tabViewItem?.label {
-            view.window?.title = label
+            view.window?.title = "Numa — \(label)"
         }
     }
 }
@@ -68,9 +68,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onFocusHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationHotKeyChange: ((UInt32, UInt32) -> Void)?
+    var onHandsFreeHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onTransformHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onSendHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationModelChange: (() -> Void)?
+    var onAttentionModelChange: (() -> Void)?
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
     var onOpacityChange: ((Double) -> Void)?
@@ -88,6 +90,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var ollamaModelPopup: NSPopUpButton!
     private var dictationModelPopup: NSPopUpButton!
     private var dictationLanguagePopup: NSPopUpButton!
+    private var attentionModelPopup: NSPopUpButton!
+    private var soundThemePopup: NSPopUpButton!
+    private let soundPlayer = NumaSoundPlayer()
     private var ollamaModelsTask: Task<Void, Never>?
 
     private static let contentWidth: CGFloat = 460
@@ -106,11 +111,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                     view: buildShortcutsPane()))
         tabs.addTabViewItem(makeTab(label: "Dictado", symbol: "mic",
                                     view: buildDictationPane()))
+        tabs.addTabViewItem(makeTab(label: "Numa", symbol: "ear",
+                                    view: buildNumaPane()))
         tabs.addTabViewItem(makeTab(label: "Inteligencia", symbol: "sparkles",
                                     view: buildIntelligencePane()))
         tabs.addTabViewItem(makeTab(label: "Diccionario", symbol: "character.book.closed",
                                     view: buildDictionaryPane()))
-        window.title = tabs.tabViewItems.first?.label ?? "Ajustes"
+        window.title = "Numa — \(tabs.tabViewItems.first?.label ?? "Ajustes")"
         window.center()
 
         if OllamaModelCatalog.isSelectorEnabled(for: Settings.completionEngine) {
@@ -245,10 +252,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             self?.onSendHotKeyChange?(code, mods)
         }
 
+        let handsFreeShortcutField = ShortcutField(
+            keyCode: Settings.handsFreeDictationHotKeyCode,
+            carbonMods: Settings.handsFreeDictationHotKeyModifiers)
+        handsFreeShortcutField.onChange = { [weak self] code, mods in
+            Settings.handsFreeDictationHotKeyCode = code
+            Settings.handsFreeDictationHotKeyModifiers = mods
+            self?.onHandsFreeHotKeyChange?(code, mods)
+        }
+
         let grid = makeGrid([
             [makeLabel("Mostrar u ocultar el teclado:"), shortcutField],
             [makeLabel("Escribir en el borrador:"), focusShortcutField],
             [makeLabel("Dictado (mantener pulsado):"), dictationShortcutField],
+            [makeLabel("Dictado manos libres (iniciar/parar):"), handsFreeShortcutField],
             [makeLabel("Transformar / instrucción:"), transformShortcutField],
             [makeLabel("Enviar el borrador:"), sendShortcutField]
         ])
@@ -332,6 +349,43 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return makePane([grid, hint])
     }
 
+    private func buildNumaPane() -> NSView {
+        let wakeName = NSTextField(labelWithString: "Numa")
+        wakeName.textColor = .secondaryLabelColor
+
+        attentionModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for model in ["tiny", "base", "small"] where VoiceAttentionModelID.isSupported(model) {
+            attentionModelPopup.addItem(withTitle: model)
+            attentionModelPopup.lastItem?.representedObject = model
+        }
+        attentionModelPopup.selectItem(withTitle: Settings.attentionModelID)
+        attentionModelPopup.target = self
+        attentionModelPopup.action = #selector(attentionModelChanged)
+
+        soundThemePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for theme in NumaSoundTheme.allCases {
+            soundThemePopup.addItem(withTitle: theme.rawValue.capitalized)
+            soundThemePopup.lastItem?.representedObject = theme.rawValue
+        }
+        soundThemePopup.selectItem(withTitle: Settings.numaSoundTheme.rawValue.capitalized)
+        soundThemePopup.target = self
+        soundThemePopup.action = #selector(soundThemeChanged)
+
+        let sample = NSButton(title: "Reproducir muestra", target: self,
+                              action: #selector(playNumaSoundSample))
+        let grid = makeGrid([
+            [makeLabel("Nombre de activación:"), wakeName],
+            [makeLabel("Modelo de attention:"), attentionModelPopup],
+            [makeLabel("Tema de sonido:"), soundThemePopup],
+            [makeLabel("Sonidos:"), sample]
+        ])
+        return makePane([
+            grid,
+            makeHint("La escucha de activación es local, usa WhisperKit y no guarda audio. " +
+                     "El estado Pausado no se conserva al cerrar Numa.")
+        ])
+    }
+
     private func buildDictionaryPane() -> NSView {
         let dictLabel = makeLabel("Palabras aprendidas (una por línea):")
 
@@ -405,6 +459,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         guard let rawValue = dictationLanguagePopup.selectedItem?.representedObject as? String,
               let language = DictationLanguage(rawValue: rawValue) else { return }
         Settings.dictationLanguage = language
+    }
+
+    @objc private func attentionModelChanged() {
+        guard let model = attentionModelPopup.selectedItem?.representedObject as? String else { return }
+        Settings.attentionModelID = model
+        onAttentionModelChange?()
+    }
+
+    @objc private func soundThemeChanged() {
+        guard let raw = soundThemePopup.selectedItem?.representedObject as? String,
+              let theme = NumaSoundTheme(rawValue: raw) else { return }
+        Settings.numaSoundTheme = theme
+    }
+
+    @objc private func playNumaSoundSample() {
+        let theme = Settings.numaSoundTheme
+        soundPlayer.playActivation(theme: theme)
+        Task { @MainActor [soundPlayer] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await soundPlayer.playFinish(theme: theme)
+        }
     }
 
     private func reloadOllamaModels() {

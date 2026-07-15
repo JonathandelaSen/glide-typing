@@ -12,23 +12,32 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp .build/release/GlideBoard "$APP/Contents/MacOS/GlideBoard"
 cp Resources/en_words.txt Resources/es_words.txt "$APP/Contents/Resources/"
+cp -R Resources/NumaSounds "$APP/Contents/Resources/NumaSounds"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+BUILD_VERSION=$(sed -nE 's/.*static let code = ([0-9]+).*/\1/p' \
+  Sources/GlideBoardCore/BuildVersion.swift)
+if [[ -z "$BUILD_VERSION" ]]; then
+  echo "Could not read BuildVersion.code" >&2
+  exit 1
+fi
+
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>GlideBoard</string>
     <key>CFBundleIdentifier</key><string>com.jon.glideboard</string>
-    <key>CFBundleName</key><string>GlideBoard</string>
+    <key>CFBundleName</key><string>Numa</string>
+    <key>CFBundleDisplayName</key><string>Numa</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>$BUILD_VERSION</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>GlideBoard usa el micrófono para transcribir dictado localmente con WhisperKit.</string>
+    <string>Numa usa el micrófono para reconocer «Numa» y «graba audio», y para transcribir dictado localmente con WhisperKit. No guarda audio.</string>
 </dict>
 </plist>
 PLIST

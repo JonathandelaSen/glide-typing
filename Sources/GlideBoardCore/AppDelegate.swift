@@ -12,9 +12,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private var focusHotKey: HotKey?
     private var transformHotKey: HotKey?
     private var dictationHotKey: HotKey?
+    private var handsFreeHotKey: HotKey?
     private var sendHotKey: HotKey?
     private var dictationController: DictationController?
-    private lazy var dictationOverlay = DictationOverlay()
+    private var numaCoordinator: NumaCoordinator?
+    private lazy var dictationOverlay = NumaOverlay { [weak self] in
+        ActiveScreenResolver.resolve(lastExternalApp: self?.lastExternalApp)
+    }
     /// Captured before the mic starts. It must never be recalculated from the
     /// status overlay's focus when the transcript is ready.
     private var dictationTarget: DictationTarget?
@@ -23,13 +27,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     /// dictation target; restore it when the delivery settles.
     private var dictationPanelHidden = false
     /// Invalidates delayed delivery/overlay work when the next dictation starts.
-    private var dictationSessionID = 0
+    private var dictationSessionID: DictationSessionID = 0
+    private var voiceCommandOverlayUntil: Date?
     /// Plan A: transform the selection of the focused app in place.
     private var transformer: TextTransformer?
     /// Claims the physical Tab key while a ghost is on screen, so the phrase
     /// suggestion can be accepted word by word without touching the mouse.
     private var tabInterceptor: KeyInterceptor?
     private var settingsController: SettingsWindowController?
+    private var lifecycleMonitor: WorkspaceLifecycleMonitor?
+    private let launchAtLoginController = LaunchAtLoginController()
+    private var launchAtLoginState: LaunchAtLoginState = .notRegistered
     private var console: ModelConsole?
     /// The most recent non-self frontmost app — the one receiving injected text.
     private var lastExternalApp: NSRunningApplication?
@@ -61,6 +69,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     /// Polls whether the focused app has an editable field, so the composer
     /// chip can switch between "insert" and "copy".
     private var targetPollTimer: Timer?
+    private var numaStatusMenuItem: NSMenuItem?
+    private var pauseAttentionMenuItem: NSMenuItem?
+    private var loginApprovalMenuItem: NSMenuItem?
 
     private var language: Language = Settings.language
     /// Combined Spanish + English + user-learned words: glides and
@@ -169,9 +180,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         applySendHotKey()
         configureDictation()
         applyDictationHotKey()
+        applyHandsFreeHotKey()
+        lifecycleMonitor = WorkspaceLifecycleMonitor { [weak self] suspended in
+            self?.numaCoordinator?.setSuspended(suspended)
+        }
+        launchAtLoginState = launchAtLoginController.ensureRegistered()
+        NSLog("Numa login item: %@", String(describing: launchAtLoginState))
+        refreshLoginMenuItem()
         applyCompletionEngine()
         showPanel()
         startTargetPolling()
+    }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        numaCoordinator?.terminate()
     }
 
     /// Keep `keyboardView.hasTextTarget` in sync with the focused field so the
@@ -281,10 +303,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             keyCode: Settings.dictationHotKeyCode,
             modifiers: Settings.dictationHotKeyModifiers,
             pressed: { [weak self] in
-                Task { await self?.dictationController?.press() }
+                self?.numaCoordinator?.pressPushToTalk()
             },
             released: { [weak self] in
-                Task { await self?.dictationController?.release() }
+                self?.numaCoordinator?.releasePushToTalk()
             }
         )
         refreshDictationMenuTitle()
@@ -293,38 +315,171 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         }
     }
 
-    private func configureDictation() {
-        dictationController?.cancel()
-        let engine = WhisperKitDictationEngine(model: Settings.dictationModel)
-        dictationController = DictationController(
-            engine: engine,
-            language: { Settings.dictationLanguage.whisperLanguage },
-            willStart: { [weak self] in self?.captureDictationTarget() },
-            output: { [weak self] transcript in self?.emitDictationTranscript(transcript) },
-            stateChanged: { [weak self] state in self?.dictationStateChanged(state) }
-        )
+    private func applyHandsFreeHotKey() {
+        handsFreeHotKey = nil
+        handsFreeHotKey = HotKey(
+            id: 6,
+            keyCode: Settings.handsFreeDictationHotKeyCode,
+            modifiers: Settings.handsFreeDictationHotKeyModifiers
+        ) { [weak self] in
+            self?.numaCoordinator?.toggleHandsFree(source: .handsFreeHotKey)
+        }
+        if handsFreeHotKey == nil {
+            NSLog("Numa: no se pudo registrar ⌥L; puede estar ocupado")
+            keyboardView?.flash("⌥L está ocupado; cambia el atajo en Ajustes")
+        }
     }
 
-    private func emitDictationTranscript(_ transcript: String) {
+    private func configureDictation() {
+        numaCoordinator?.terminate()
+        let descriptor = VoiceAttentionDescriptor.default(modelID: Settings.attentionModelID)
+        // A broken attention model must never disable dictation: fall back to
+        // a recognizer that reports itself unavailable and keep the rest of
+        // the pipeline (hotkeys, push-to-talk, hands-free) fully wired.
+        let recognizer: VoiceAttentionRecognizing
+        do {
+            recognizer = try VoiceAttentionRecognizerFactory.make(descriptor: descriptor)
+        } catch {
+            keyboardView?.flash(error.localizedDescription)
+            recognizer = UnavailableVoiceAttentionRecognizer(error: error)
+        }
+        let executor = NumaAudioExecutor()
+        let pipeline = NumaAudioPipeline(executor: executor)
+        let capture = MicrophoneCaptureService()
+        let transcriber = WhisperKitTranscriber(model: Settings.dictationModel)
+        let controller = DictationController(
+            transcriber: transcriber,
+            language: { Settings.dictationLanguage.whisperLanguage },
+            willStart: { [weak self] sessionID in self?.captureDictationTarget(sessionID: sessionID) },
+            deliver: { [weak self] sessionID, transcript, completion in
+                guard let self else { completion(); return }
+                self.emitDictationTranscript(transcript, sessionID: sessionID,
+                                             completion: completion)
+            },
+            stateChanged: { [weak self] state in
+                self?.dictationStateChanged(state)
+                self?.numaCoordinator?.dictationStateDidChange(state)
+            }
+        )
+        dictationController = controller
+        let coordinator = NumaCoordinator(
+            capture: capture,
+            pipeline: pipeline,
+            recognizer: recognizer,
+            descriptor: descriptor,
+            controller: controller,
+            stateChanged: { [weak self] state in self?.numaStateChanged(state) },
+            notice: { [weak self] message, duration in
+                self?.presentNumaNotice(message, duration: duration)
+            },
+            soundPlayer: NumaSoundPlayer(),
+            soundTheme: { Settings.numaSoundTheme },
+            rmsChanged: { [weak self] rms in self?.dictationOverlay.updateRMS(rms) },
+            commandRecognized: { [weak self] in self?.presentVoiceCommandRecognized() }
+        )
+        numaCoordinator = coordinator
+        Task { await coordinator.startAtLaunch() }
+    }
+
+    private func presentNumaNotice(_ message: String, duration: TimeInterval) {
+        keyboardView?.flash(message)
+        if message == "No te he entendido" {
+            dictationOverlay.show(.notUnderstood, destination: "Numa")
+            dictationOverlay.hide(after: duration)
+        }
+    }
+
+    private func presentVoiceCommandRecognized() {
+        voiceCommandOverlayUntil = Date().addingTimeInterval(0.6)
+        dictationOverlay.show(.commandRecognized("graba audio"), destination: "Numa")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            self.voiceCommandOverlayUntil = nil
+            self.refreshDictationOverlayForCurrentState()
+        }
+    }
+
+    private func refreshDictationOverlayForCurrentState() {
+        guard let state = dictationController?.state else { return }
+        let destination = (dictationTarget ?? .fallback).destinationName
+        switch state {
+        case .preparing: dictationOverlay.show(.preparing, destination: destination)
+        case .recording: dictationOverlay.show(.recording, destination: destination)
+        case .transcribing: dictationOverlay.show(.transcribing, destination: destination)
+        case .delivering: dictationOverlay.show(.inserting, destination: destination)
+        case .idle, .failed: break
+        }
+    }
+
+    private func emitDictationTranscript(_ transcript: String,
+                                         sessionID: DictationSessionID,
+                                         completion: @escaping @Sendable () -> Void) {
         let target = dictationTarget ?? .fallback
-        let sessionID = dictationSessionID
         switch target {
         case .composer(let selection, let textBeforeSelection):
             let insertion = DictationInsertion.text(transcript: transcript,
                                                     existingText: textBeforeSelection,
                                                     replacingSelection: target.replacesSelection)
-            guard !insertion.isEmpty else { return }
+            guard !insertion.isEmpty else { completion(); return }
             DictationLog.write("inserción: en el borrador (destino borrador)")
             insertDictationIntoComposer(insertion, selection: selection, reveal: false)
-            finishDictationDelivery(destination: target.destinationName, sessionID: sessionID)
+            finishDictationDelivery(destination: target.destinationName, sessionID: sessionID,
+                                    completion: completion)
         case .external(let external):
             let insertion = DictationInsertion.text(transcript: transcript,
                                                     existingText: external.textBeforeSelection,
                                                     replacingSelection: target.replacesSelection)
-            guard !insertion.isEmpty else { return }
-            deliverDictation(insertion, rawTranscript: transcript, to: external, sessionID: sessionID)
+            guard !insertion.isEmpty else { completion(); return }
+            deliverDictation(insertion, rawTranscript: transcript, to: external,
+                             sessionID: sessionID, completion: completion)
         case .fallback:
-            insertDictationFallback(transcript, sessionID: sessionID)
+            insertDictationFallback(transcript, sessionID: sessionID, completion: completion)
+        }
+    }
+
+    private func numaStateChanged(_ state: NumaState) {
+        switch state {
+        case .attentive:
+            setStatusIcon("ear", description: "Numa — Atento")
+            numaStatusMenuItem?.title = "Numa: Atento"
+            pauseAttentionMenuItem?.title = "Pausar escucha"
+        case .awaitingCommand:
+            setStatusIcon("waveform", description: "Numa — esperando comando")
+            numaStatusMenuItem?.title = "Numa: Te escucho…"
+            dictationOverlay.show(.attending("Numa"), destination: "Numa")
+        case .pausedByUser:
+            setStatusIcon("pause.circle", description: "Numa — Pausado")
+            numaStatusMenuItem?.title = "Numa: Pausado"
+            pauseAttentionMenuItem?.title = "Reanudar escucha"
+        case .suspended:
+            numaStatusMenuItem?.title = "Numa: Suspendido"
+        case .unavailable(let reason):
+            setStatusIcon("mic.slash", description: "Numa — No disponible: \(reason)")
+            numaStatusMenuItem?.title = "Numa: No disponible"
+        case .starting:
+            numaStatusMenuItem?.title = "Numa: Iniciando…"
+        case .stopped, .preparing, .recording, .transcribing, .delivering:
+            break
+        }
+    }
+
+    private func refreshLoginMenuItem() {
+        guard let item = loginApprovalMenuItem else { return }
+        switch launchAtLoginState {
+        case .enabled:
+            item.isHidden = true
+        case .requiresApproval:
+            item.isHidden = false
+            item.isEnabled = true
+            item.title = "Permitir inicio automático…"
+        case .notRegistered:
+            item.isHidden = false
+            item.isEnabled = true
+            item.title = "Reintentar inicio automático"
+        case .unavailable:
+            item.isHidden = false
+            item.isEnabled = true
+            item.title = "Configurar inicio automático…"
         }
     }
 
@@ -333,35 +488,45 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         refreshDictationMenuTitle()
         switch state {
         case .idle:
-            setStatusIcon("keyboard", description: "GlideBoard")
+            setStatusIcon("keyboard", description: "Numa")
             if !dictationDeliveryInProgress {
                 dictationOverlay.hide()
                 dictationTarget = nil
                 restoreDictationPanel()
             }
         case .preparing:
-            setStatusIcon("mic", description: "GlideBoard — preparando micrófono")
+            setStatusIcon("mic", description: "Numa — preparando micrófono")
             keyboardView.flash("Preparando micrófono…")
-            dictationOverlay.show(.preparing,
-                                  destination: (dictationTarget ?? .fallback).destinationName)
-        case .recording:
-            setStatusIcon("mic.fill", description: "GlideBoard — dictando")
-            keyboardView.flash("Dictando… suelta para transcribir")
-            dictationOverlay.show(.recording,
-                                  destination: (dictationTarget ?? .fallback).destinationName)
+            if voiceCommandOverlayUntil.map({ $0 > Date() }) != true {
+                dictationOverlay.show(.preparing,
+                                      destination: (dictationTarget ?? .fallback).destinationName)
+            }
+        case .recording(let mode):
+            setStatusIcon("mic.fill", description: "Numa — dictando")
+            keyboardView.flash(mode == .pushToTalk
+                ? "Dictando… suelta para transcribir"
+                : "Dictando… termina con ⌥L, menú o 🎙")
+            if voiceCommandOverlayUntil.map({ $0 > Date() }) != true {
+                dictationOverlay.show(.recording,
+                                      destination: (dictationTarget ?? .fallback).destinationName)
+            }
         case .transcribing:
-            setStatusIcon("waveform", description: "GlideBoard — transcribiendo")
+            setStatusIcon("waveform", description: "Numa — transcribiendo")
             keyboardView.flash("WhisperKit está transcribiendo…")
             dictationOverlay.show(.transcribing,
                                   destination: (dictationTarget ?? .fallback).destinationName)
+        case .delivering:
+            setStatusIcon("arrow.up.circle", description: "Numa — entregando")
+            dictationOverlay.show(.inserting,
+                                  destination: (dictationTarget ?? .fallback).destinationName)
         case .failed(let message):
-            setStatusIcon("keyboard", description: "GlideBoard")
+            setStatusIcon("keyboard", description: "Numa")
             keyboardView.flash(message)
             DictationLog.write("fallo: \(message)")
             dictationDeliveryInProgress = false
             dictationTarget = nil
             restoreDictationPanel()
-            dictationOverlay.show(.failed(message), destination: "GlideBoard")
+            dictationOverlay.show(.failed(message), destination: "Numa")
             dictationOverlay.hide(after: 2.4)
         }
     }
@@ -369,8 +534,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     /// Snapshot the precise recipient before our own floating UI is shown.
     /// A board composer is intentional only when it actually holds key focus;
     /// otherwise an external app with a real editable field wins.
-    private func captureDictationTarget() {
-        dictationSessionID += 1
+    private func captureDictationTarget(sessionID: DictationSessionID) {
+        dictationSessionID = sessionID
         if panel.isKeyWindow, composerEnabled {
             let selection = keyboardView.composerView.selectedRange()
             let text = composerText as NSString
@@ -415,8 +580,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     /// No external field was available at start: turn the board into the safe
     /// destination, keep any existing draft, and put the transcript at the
     /// board's current cursor rather than replacing the whole draft.
-    private func insertDictationFallback(_ transcript: String, sessionID: Int) {
-        guard sessionID == dictationSessionID else { return }
+    private func insertDictationFallback(_ transcript: String,
+                                         sessionID: DictationSessionID,
+                                         completion: @escaping @Sendable () -> Void) {
+        guard sessionID == dictationSessionID else { completion(); return }
         if !composerEnabled {
             composerEnabled = true
             keyboardView.composerEnabled = true
@@ -427,47 +594,54 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         let insertion = DictationInsertion.text(transcript: transcript,
                                                 existingText: text.substring(to: location),
                                                 replacingSelection: selection.length > 0)
-        guard !insertion.isEmpty else { return }
+        guard !insertion.isEmpty else { completion(); return }
         DictationLog.write("inserción: en el borrador, revelando el teclado")
         insertDictationIntoComposer(insertion,
                                     selection: NSRange(location: location,
                                                        length: min(selection.length, text.length - location)),
                                     reveal: true)
-        finishDictationDelivery(destination: "GlideBoard", sessionID: sessionID)
+        finishDictationDelivery(destination: "Numa", sessionID: sessionID,
+                                completion: completion)
     }
 
     private func deliverDictation(_ insertion: String, rawTranscript: String,
-                                  to target: CapturedTextTarget, sessionID: Int) {
+                                  to target: CapturedTextTarget,
+                                  sessionID: DictationSessionID,
+                                  completion: @escaping @Sendable () -> Void) {
         dictationDeliveryInProgress = true
         dictationOverlay.show(.inserting, destination: target.app.localizedName ?? "la aplicación")
         target.app.activate()
         attemptDictationDelivery(insertion, rawTranscript: rawTranscript, to: target,
-                                 attemptsRemaining: 12, sessionID: sessionID)
+                                 attemptsRemaining: 12, sessionID: sessionID,
+                                 completion: completion)
     }
 
     private func attemptDictationDelivery(_ insertion: String, rawTranscript: String,
                                           to target: CapturedTextTarget, attemptsRemaining: Int,
-                                          sessionID: Int) {
-        guard sessionID == dictationSessionID else { return }
+                                          sessionID: DictationSessionID,
+                                          completion: @escaping @Sendable () -> Void) {
+        guard sessionID == dictationSessionID else { completion(); return }
         guard !target.app.isTerminated else {
             DictationLog.write("entrega: \(target.app.localizedName ?? "la app destino") terminó — al borrador")
             dictationDeliveryInProgress = false
             restoreDictationPanel()
-            insertDictationFallback(rawTranscript, sessionID: sessionID)
+            insertDictationFallback(rawTranscript, sessionID: sessionID,
+                                    completion: completion)
             return
         }
         guard attemptsRemaining > 0 else {
             DictationLog.write("entrega: agotados los intentos con \(target.app.localizedName ?? "?") — al borrador")
             dictationDeliveryInProgress = false
             restoreDictationPanel()
-            insertDictationFallback(rawTranscript, sessionID: sessionID)
+            insertDictationFallback(rawTranscript, sessionID: sessionID,
+                                    completion: completion)
             return
         }
         let retry = { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 self?.attemptDictationDelivery(insertion, rawTranscript: rawTranscript, to: target,
                                                attemptsRemaining: attemptsRemaining - 1,
-                                               sessionID: sessionID)
+                                               sessionID: sessionID, completion: completion)
             }
         }
         // Same ground-truth chain as the composer delivery: isActive and the
@@ -521,7 +695,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         DictationLog.write("entrega: tecleado en \(target.app.localizedName ?? "?") (\(insertion.count) caracteres)")
         noteDictationInsertion(insertion)
         finishDictationDelivery(destination: target.app.localizedName ?? "la aplicación",
-                                sessionID: sessionID)
+                                sessionID: sessionID, completion: completion)
     }
 
     private func noteDictationInsertion(_ text: String) {
@@ -532,10 +706,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         requestCompletion()
     }
 
-    private func finishDictationDelivery(destination: String, sessionID: Int) {
-        guard sessionID == dictationSessionID else { return }
+    private func finishDictationDelivery(destination: String,
+                                         sessionID: DictationSessionID,
+                                         completion: @escaping @Sendable () -> Void) {
+        guard sessionID == dictationSessionID else { completion(); return }
         dictationDeliveryInProgress = true
         dictationOverlay.show(.inserting, destination: destination)
+        completion()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self else { return }
             guard self.dictationSessionID == sessionID else { return }
@@ -555,17 +732,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private func refreshDictationMenuTitle() {
         switch dictationController?.state {
         case .preparing, .recording:
-            dictationMenuItem?.title = "Terminar dictado"
+            dictationMenuItem?.title = "Terminar grabación manos libres"
             dictationMenuItem?.keyEquivalent = ""
             dictationMenuItem?.isEnabled = true
-        case .transcribing:
+        case .transcribing, .delivering:
             dictationMenuItem?.title = "Transcribiendo con WhisperKit…"
             dictationMenuItem?.keyEquivalent = ""
             dictationMenuItem?.isEnabled = false
         default:
-            dictationMenuItem?.title = "Iniciar dictado (mantener atajo)"
-            applyShortcutDisplay(dictationMenuItem, keyCode: Settings.dictationHotKeyCode,
-                                 modifiers: Settings.dictationHotKeyModifiers)
+            dictationMenuItem?.title = "Grabar audio"
+            applyShortcutDisplay(dictationMenuItem, keyCode: Settings.handsFreeDictationHotKeyCode,
+                                 modifiers: Settings.handsFreeDictationHotKeyModifiers)
             dictationMenuItem?.isEnabled = true
         }
     }
@@ -1131,11 +1308,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
 
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        setStatusIcon("keyboard", description: "GlideBoard")
+        setStatusIcon("keyboard", description: "Numa")
 
         let menu = NSMenu()
         // Manual enabling so the dictation item can be disabled while transcribing.
         menu.autoenablesItems = false
+
+        let numaStatus = NSMenuItem(title: "Numa: Iniciando…", action: nil,
+                                    keyEquivalent: "")
+        numaStatus.isEnabled = false
+        menu.addItem(numaStatus)
+        numaStatusMenuItem = numaStatus
+
+        let pause = NSMenuItem(title: "Pausar escucha",
+                               action: #selector(menuToggleAttention), keyEquivalent: "")
+        pause.target = self
+        menu.addItem(pause)
+        pauseAttentionMenuItem = pause
+
+        let login = NSMenuItem(title: "Permitir inicio automático…",
+                               action: #selector(menuOpenLoginSettings), keyEquivalent: "")
+        login.target = self
+        login.isHidden = true
+        menu.addItem(login)
+        loginApprovalMenuItem = login
+        menu.addItem(.separator())
 
         // Primary actions. Their global hotkeys render right-aligned like
         // native key equivalents (see applyShortcutDisplay).
@@ -1171,7 +1368,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         applyShortcutDisplay(send, keyCode: Settings.sendHotKeyCode,
                              modifiers: Settings.sendHotKeyModifiers)
 
-        let dictation = NSMenuItem(title: "Iniciar dictado", action: #selector(menuDictation),
+        let dictation = NSMenuItem(title: "Grabar audio", action: #selector(menuDictation),
                                    keyEquivalent: "")
         dictation.target = self
         menu.addItem(dictation)
@@ -1217,7 +1414,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         settings.target = self
         menu.addItem(settings)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Salir de GlideBoard", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Salir de Numa", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
         statusItem.menu = menu
     }
@@ -1247,25 +1444,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     }
 
     @objc private func menuToggle() { togglePanel() }
+    @objc private func menuToggleAttention() {
+        if numaCoordinator?.state == .pausedByUser {
+            numaCoordinator?.resume()
+        } else {
+            numaCoordinator?.pause()
+        }
+    }
+    @objc private func menuOpenLoginSettings() {
+        if launchAtLoginState == .notRegistered {
+            launchAtLoginState = launchAtLoginController.ensureRegistered()
+            NSLog("Numa login item: %@", String(describing: launchAtLoginState))
+            refreshLoginMenuItem()
+        } else {
+            launchAtLoginController.openSystemSettings()
+        }
+    }
     @objc private func menuFocusComposer() { focusComposerInput() }
     @objc private func menuTransform() { transformer?.begin() }
     @objc private func menuSendComposer() { sendComposerFromHotKey() }
     @objc private func menuDictation() {
-        toggleDictation()
+        numaCoordinator?.toggleHandsFree(source: .menu)
     }
 
-    private func toggleDictation() {
-        guard let dictationController else { return }
-        Task {
-            switch dictationController.state {
-            case .preparing, .recording:
-                await dictationController.release()
-            case .idle, .failed:
-                await dictationController.press()
-            case .transcribing:
-                break
-            }
-        }
+    private func toggleDictationFromButton() {
+        numaCoordinator?.toggleHandsFree(source: .button)
     }
     @objc private func setSpanish() { switchLanguage(.spanish) }
     @objc private func setEnglish() { switchLanguage(.english) }
@@ -1324,9 +1527,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             controller.onHotKeyChange = { [weak self] _, _ in self?.applyHotKey() }
             controller.onFocusHotKeyChange = { [weak self] _, _ in self?.applyFocusHotKey() }
             controller.onDictationHotKeyChange = { [weak self] _, _ in self?.applyDictationHotKey() }
+            controller.onHandsFreeHotKeyChange = { [weak self] _, _ in self?.applyHandsFreeHotKey() }
             controller.onTransformHotKeyChange = { [weak self] _, _ in self?.applyTransformHotKey() }
             controller.onSendHotKeyChange = { [weak self] _, _ in self?.applySendHotKey() }
             controller.onDictationModelChange = { [weak self] in self?.configureDictation() }
+            controller.onAttentionModelChange = { [weak self] in self?.configureDictation() }
             controller.onLanguageChange = { [weak self] lang in self?.switchLanguage(lang) }
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
             controller.onOpacityChange = { [weak self] value in self?.panel.alphaValue = value }
@@ -1384,7 +1589,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     }
 
     func keyboardViewDidToggleDictation(_ view: KeyboardView) {
-        toggleDictation()
+        toggleDictationFromButton()
     }
 
     func keyboardViewDidRequestClose(_ view: KeyboardView) {

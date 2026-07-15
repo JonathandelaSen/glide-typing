@@ -12,7 +12,7 @@ enum DictationTarget {
     var destinationName: String {
         switch self {
         case .composer, .fallback:
-            "GlideBoard"
+            "Numa"
         case .external(let target):
             target.app.localizedName ?? "la aplicación"
         }

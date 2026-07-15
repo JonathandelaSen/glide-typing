@@ -1,25 +1,31 @@
 import AppKit
 
 @MainActor
-final class DictationOverlay {
+final class NumaOverlay {
     enum Phase {
+        case attending(String)
+        case commandRecognized(String)
         case preparing
         case recording
         case transcribing
         case inserting
+        case notUnderstood
         case failed(String)
     }
 
     private let panel: NSPanel
-    private let view: DictationOverlayView
+    private let view: NumaOverlayView
     private var dismissWork: DispatchWorkItem?
+    private let screenProvider: () -> NSScreen?
 
-    init() {
-        view = DictationOverlayView(frame: NSRect(x: 0, y: 0, width: 330, height: 76))
+    init(screenProvider: @escaping () -> NSScreen? = { NSScreen.main }) {
+        self.screenProvider = screenProvider
+        view = NumaOverlayView(frame: NSRect(x: 0, y: 0, width: 330, height: 76))
         panel = NSPanel(contentRect: view.bounds,
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
         panel.level = .statusBar
+        panel.ignoresMouseEvents = true
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
@@ -44,26 +50,26 @@ final class DictationOverlay {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    func updateRMS(_ rms: Float) { view.updateRMS(rms) }
+
     private func position() {
-        guard let screen = NSScreen.main else { return }
-        let frame = screen.visibleFrame
-        panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2,
-                                     y: frame.minY + 26))
+        guard let screen = screenProvider() else { return }
+        panel.setFrameOrigin(OverlayPositioner.origin(
+            visibleFrame: screen.visibleFrame, panelSize: panel.frame.size))
     }
 }
 
-private final class DictationOverlayView: NSView {
-    var phase: DictationOverlay.Phase = .preparing { didSet { refresh() } }
-    var destination = "GlideBoard" { didSet { refresh() } }
+private final class NumaOverlayView: NSView {
+    var phase: NumaOverlay.Phase = .preparing { didSet { refresh() } }
+    var destination = "Numa" { didSet { refresh() } }
     private var startedAt = Date()
-    private var tick = 0
+    private var signalLevel: CGFloat = 0
     private var timer: Timer?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         timer = Timer.scheduledTimer(withTimeInterval: 0.14, repeats: true) { [weak self] _ in
-            self?.tick += 1
             self?.needsDisplay = true
         }
         RunLoop.main.add(timer!, forMode: .common)
@@ -74,6 +80,12 @@ private final class DictationOverlayView: NSView {
 
     private func refresh() {
         if case .preparing = phase { startedAt = Date() }
+        needsDisplay = true
+    }
+
+    func updateRMS(_ rms: Float) {
+        let normalized = NumaSignalLevel.normalized(rms: rms)
+        signalLevel = signalLevel * 0.72 + normalized * 0.28
         needsDisplay = true
     }
 
@@ -99,6 +111,10 @@ private final class DictationOverlayView: NSView {
 
     private func labels() -> (String, String) {
         switch phase {
+        case .attending(let wakeWord):
+            return ("Te escucho…", wakeWord)
+        case .commandRecognized(let command):
+            return (command, "Grabación manos libres")
         case .preparing:
             return ("Preparando micrófono", "Destino: \(destination)")
         case .recording:
@@ -107,6 +123,8 @@ private final class DictationOverlayView: NSView {
             return ("Transcribiendo audio", "Audio de \(durationText()) · sigue procesando")
         case .inserting:
             return ("Insertando en \(destination)", "El texto anterior se conserva")
+        case .notUnderstood:
+            return ("No te he entendido", "Di solo «graba audio»")
         case .failed(let message):
             return ("No se pudo iniciar el dictado", message)
         }
@@ -124,9 +142,9 @@ private final class DictationOverlayView: NSView {
         case .failed: color = NSColor(calibratedRed: 0.96, green: 0.48, blue: 0.42, alpha: 1)
         default: color = NSColor(calibratedRed: 0.40, green: 0.67, blue: 1.0, alpha: 1)
         }
+        let shape: [CGFloat] = [0.55, 0.82, 1, 0.78, 0.5]
         for index in 0..<5 {
-            let pulse = (tick + index * 2) % 6
-            let height = 13 + CGFloat(pulse <= 3 ? pulse : 6 - pulse) * 7
+            let height = 8 + signalLevel * 34 * shape[index]
             let rect = CGRect(x: 25 + CGFloat(index) * 8, y: bounds.midY - height / 2,
                               width: 4, height: height)
             color.setFill()

@@ -2,27 +2,21 @@ import Foundation
 import WhisperKit
 
 enum WhisperKitDictationError: LocalizedError {
-    case microphonePermissionDenied
     case recordingTooShort
     case emptyResult
+    case invalidWordTimings
 
     var errorDescription: String? {
         switch self {
-        case .microphonePermissionDenied:
-            return "GlideBoard no tiene permiso para usar el micrófono"
-        case .recordingTooShort:
-            return "Mantén pulsado el atajo un poco más"
-        case .emptyResult:
-            return "WhisperKit no devolvió una transcripción"
+        case .recordingTooShort: "La grabación es demasiado corta"
+        case .emptyResult: "WhisperKit no devolvió una transcripción"
+        case .invalidWordTimings: "WhisperKit devolvió timestamps de palabras no seguros"
         }
     }
 }
 
 enum DictationDecoding {
-    /// Keep the safe WhisperKit fallback thresholds, enable language detection
-    /// only when the user opted into it, and split long recordings around
-    /// silence so pauses do not contaminate a whole 30-second decoding window.
-    static func options(language: String?) -> DecodingOptions {
+    static func options(language: String?, wordTimestamps: Bool = false) -> DecodingOptions {
         DecodingOptions(
             task: .transcribe,
             language: language,
@@ -30,74 +24,95 @@ enum DictationDecoding {
             usePrefillPrompt: true,
             detectLanguage: language == nil,
             skipSpecialTokens: true,
-            withoutTimestamps: true,
+            withoutTimestamps: !wordTimestamps,
+            wordTimestamps: wordTimestamps,
+            concurrentWorkerCount: 1,
             chunkingStrategy: .vad
         )
     }
 }
 
-/// Local, on-device speech-to-text. Audio capture starts without waiting for
-/// the model; the selected Core ML model is downloaded and loaded only after
-/// the first recording is complete, so initial setup never loses spoken audio.
-final class WhisperKitDictationEngine: DictationEngine {
+enum WhisperTranscriptMapper {
+    static func map(_ results: [TranscriptionResult],
+                    wordTimestamps: Bool) throws -> DictationTranscript
+    {
+        guard wordTimestamps else {
+            return DictationTranscript(
+                text: results.map(\.text).joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                words: []
+            )
+        }
+
+        var text = ""
+        var words: [TranscribedWord] = []
+        var previousEnd: TimeInterval = 0
+        for word in results.flatMap(\.allWords) {
+            let start = TimeInterval(word.start)
+            let end = TimeInterval(word.end)
+            guard start >= previousEnd, end >= start else {
+                throw WhisperKitDictationError.invalidWordTimings
+            }
+            let lower = text.utf16.count
+            text.append(word.word)
+            let upper = text.utf16.count
+            words.append(TranscribedWord(
+                text: word.word,
+                start: start,
+                end: end,
+                textRangeUTF16: lower..<upper
+            ))
+            previousEnd = end
+        }
+        return DictationTranscript(text: text, words: words)
+    }
+}
+
+/// Pure on-device transcriber. It receives an immutable 16 kHz snapshot and
+/// never starts, stops or installs a microphone tap.
+actor WhisperKitTranscriber: DictationTranscribing {
     private static let minimumSamples = WhisperKit.sampleRate / 4
 
     private let model: String
-    private let audioProcessor = AudioProcessor()
     private var pipeline: WhisperKit?
 
     init(model: String) {
         self.model = model
     }
 
-    func startRecording() async throws {
-        let inputDevices = AudioProcessor.getAudioDevices()
-        try requireMicrophoneInput(deviceCount: inputDevices.count)
-        guard await AudioProcessor.requestRecordPermission() else {
-            throw WhisperKitDictationError.microphonePermissionDenied
-        }
-        // Passing nil intentionally uses macOS's selected input. The first
-        // device Core Audio enumerates may be a webcam or disconnected dock.
-        try audioProcessor.startRecordingLive(inputDeviceID: nil, callback: nil)
-    }
-
-    func stopRecordingAndTranscribe(language: String?) async throws -> String {
-        audioProcessor.stopRecording()
-        let samples = Array(audioProcessor.audioSamples)
+    func transcribe(samples: [Float],
+                    language: String?,
+                    wordTimestamps: Bool) async throws -> DictationTranscript
+    {
         guard samples.count >= Self.minimumSamples else {
             throw WhisperKitDictationError.recordingTooShort
         }
-
         let whisperKit = try await loadPipeline()
-        let options = DictationDecoding.options(language: language)
-        let results = try await whisperKit.transcribe(audioArray: samples,
-                                                      decodeOptions: options)
-        let text = results
-            .map(\.text)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw WhisperKitDictationError.emptyResult }
-        return text
-    }
-
-    func cancelRecording() {
-        audioProcessor.stopRecording()
+        let results = try await whisperKit.transcribe(
+            audioArray: samples,
+            decodeOptions: DictationDecoding.options(
+                language: language, wordTimestamps: wordTimestamps)
+        )
+        let transcript = try WhisperTranscriptMapper.map(
+            results, wordTimestamps: wordTimestamps)
+        guard !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw WhisperKitDictationError.emptyResult
+        }
+        return transcript
     }
 
     private func loadPipeline() async throws -> WhisperKit {
         if let pipeline { return pipeline }
-
         let config = WhisperKitConfig(
             model: model,
-            audioProcessor: audioProcessor,
             verbose: false,
             prewarm: false,
             load: true,
             download: true,
             useBackgroundDownloadSession: false
         )
-        let pipeline = try await WhisperKit(config)
-        self.pipeline = pipeline
-        return pipeline
+        let loaded = try await WhisperKit(config)
+        pipeline = loaded
+        return loaded
     }
 }

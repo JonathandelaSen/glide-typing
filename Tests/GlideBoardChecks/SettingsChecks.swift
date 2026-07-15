@@ -17,6 +17,10 @@ func settingsChecks() async {
         try expectEqual(Settings.dictationHotKeyCode, UInt32(kVK_Space))
         try expectEqual(Settings.dictationHotKeyModifiers, UInt32(controlKey | optionKey))
         try expectEqual(Settings.dictationLanguage, .automatic)
+        try expectEqual(Settings.handsFreeDictationHotKeyCode, UInt32(kVK_ANSI_L))
+        try expectEqual(Settings.handsFreeDictationHotKeyModifiers, UInt32(optionKey))
+        try expectEqual(Settings.attentionModelID, "tiny")
+        try expectEqual(Settings.numaSoundTheme, .crystal)
     }
 
     await c.test("values round-trip through defaults") {
@@ -29,6 +33,19 @@ func settingsChecks() async {
         try expectEqual(Settings.dictationLanguage.whisperLanguage, "en")
         Settings.dictationLanguage = .automatic
         try expectNil(Settings.dictationLanguage.whisperLanguage)
+
+        let pttCode = Settings.dictationHotKeyCode
+        let pttModifiers = Settings.dictationHotKeyModifiers
+        Settings.handsFreeDictationHotKeyCode = UInt32(kVK_ANSI_M)
+        Settings.handsFreeDictationHotKeyModifiers = UInt32(cmdKey)
+        Settings.attentionModelID = "base"
+        try expectEqual(Settings.handsFreeDictationHotKeyCode, UInt32(kVK_ANSI_M))
+        try expectEqual(Settings.handsFreeDictationHotKeyModifiers, UInt32(cmdKey))
+        try expectEqual(Settings.attentionModelID, "base")
+        Settings.numaSoundTheme = .organic
+        try expectEqual(Settings.numaSoundTheme, .organic)
+        try expectEqual(Settings.dictationHotKeyCode, pttCode)
+        try expectEqual(Settings.dictationHotKeyModifiers, pttModifiers)
     }
 
     await c.test("scale clamps to its usable range") {

@@ -1466,7 +1466,7 @@ final class KeyboardView: NSView {
                 "stop.fill", true,
                 NSColor(calibratedRed: 0.7, green: 0.18, blue: 0.2, alpha: 1)
             )
-        case .transcribing:
+        case .transcribing, .delivering:
             (symbol, active, color) = ("ellipsis", true, nil)
         case .failed:
             (symbol, active, color) = ("exclamationmark.triangle", false, nil)

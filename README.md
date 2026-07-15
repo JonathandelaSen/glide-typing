@@ -1,6 +1,6 @@
-# GlideBoard
+# Numa
 
-A floating **glide/swipe typing** keyboard for macOS. Type words by sliding your mouse or trackpad across an on-screen keyboard, much like an Android keyboard. Designed for one-handed typing.
+A floating **glide/swipe typing** keyboard for macOS with local voice activation and hands-free dictation. The package, executable and support directory retain their internal `GlideBoard` names.
 
 ## Build and Run
 
@@ -16,8 +16,12 @@ Requires Xcode Command Line Tools (Swift). On first launch, macOS will request *
 ## Usage
 
 - Press **⌥⌘G** to show or hide the floating keyboard. You can also use the ⌨︎ menu bar icon.
-- Press **⇧⌥⌘G** to show GlideBoard and move keyboard focus to the end of its composer; press it again to return focus to the app you came from. Type with the physical keyboard, then use **↪** or **⏎** when you want to send the draft. Both shortcuts can be changed in Settings.
-- Hold **⌃⌥Space** to dictate with WhisperKit and release it to transcribe, or click the **🎙** button in the keyboard toolbar to start/stop recording. GlideBoard uses the microphone selected in macOS, transcribes locally, and puts the result in the composer for review (or directly in the focused app when composer mode is disabled). Dictation language is independent from the ES/EN keyboard layout: leave it on **Automatic** for bilingual speech or force Spanish/English in Settings. The first use downloads the selected model; choose `base`, `small`, or `large-v3-turbo` in Settings.
+- Press **⇧⌥⌘G** to show Numa and move keyboard focus to the end of its composer; press it again to return focus to the app you came from.
+- Numa starts **Atento** on every launch. Say **“Numa”** and then the exact command **“graba audio”**. A continuous phrase such as “Numa, graba audio, mañana…” keeps “mañana” and removes only the timestamped command prefix.
+- Press **⌥L** once to start hands-free dictation and again to stop. The 🎙 button and **Grabar audio** menu item use the same toggle. Hands-free dictation also stops after 2 seconds of silence, or cancels after 5 seconds without initial speech.
+- Existing push-to-talk remains unchanged: hold **⌃⌥Space** and release it to transcribe. Its shortcut and model preference are separate from hands-free attention.
+- Attention uses multilingual WhisperKit `tiny` by default; `base` and `small` can be selected in Settings without changing the coordinator or audio pipeline. Final dictation keeps its independent model/language settings.
+- All recognition is local. Audio stays in RAM, the always-on ring is limited to six seconds (96,000 mono samples at 16 kHz), and Numa does not save audio or attention transcripts. Pause listening from the status menu; pause is intentionally reset on relaunch.
 - The keyboard **does not steal focus**: text is sent to the app where you are currently typing, such as Notes, Safari, or Slack.
 - **Glide** across the letters of a word without releasing the button, then release when finished. The best prediction is inserted, with automatic spacing between words. While gliding, the top bar displays the word being formed in real time.
 - **Composer mode** (default): text is composed in a text area at the top of the panel — with the AI continuation shaded inline — and inserted into the focused app with the **↪** chip, or inserted + sent with **⏎**. This gives the model perfect context in any app. Disable it in Settings to type directly into the app. Typed fragments also work as **abbreviations**: "tcld" suggests "teclado", "kybrd" suggests "keyboard".

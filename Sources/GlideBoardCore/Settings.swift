@@ -77,10 +77,44 @@ enum Settings {
         set { defaults.set(NSNumber(value: newValue), forKey: "dictationHotKeyModifiers") }
     }
 
+    /// Toggle shortcut for hands-free dictation. This is deliberately stored
+    /// separately from the existing press/release push-to-talk shortcut.
+    static var handsFreeDictationHotKeyCode: UInt32 {
+        get {
+            (defaults.object(forKey: "handsFreeDictationHotKeyCode") as? NSNumber)?.uint32Value
+                ?? UInt32(kVK_ANSI_L)
+        }
+        set { defaults.set(NSNumber(value: newValue), forKey: "handsFreeDictationHotKeyCode") }
+    }
+
+    static var handsFreeDictationHotKeyModifiers: UInt32 {
+        get {
+            (defaults.object(forKey: "handsFreeDictationHotKeyModifiers") as? NSNumber)?.uint32Value
+                ?? UInt32(optionKey)
+        }
+        set { defaults.set(NSNumber(value: newValue), forKey: "handsFreeDictationHotKeyModifiers") }
+    }
+
     /// Core ML model downloaded by WhisperKit on first use.
     static var dictationModel: String {
         get { defaults.string(forKey: "dictationModel") ?? "small" }
         set { defaults.set(newValue, forKey: "dictationModel") }
+    }
+
+    /// WhisperKit model used only by always-on voice attention. Dictation has
+    /// its own model preference above and changing either must not affect the
+    /// other pipeline.
+    static var attentionModelID: String {
+        get { defaults.string(forKey: "attentionModelID") ?? "tiny" }
+        set { defaults.set(newValue, forKey: "attentionModelID") }
+    }
+
+    static var numaSoundTheme: NumaSoundTheme {
+        get {
+            NumaSoundTheme(rawValue: defaults.string(forKey: "numaSoundTheme") ?? "")
+                ?? .crystal
+        }
+        set { defaults.set(newValue.rawValue, forKey: "numaSoundTheme") }
     }
 
     /// Spoken language is independent from the keyboard layout. Automatic is
