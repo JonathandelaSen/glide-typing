@@ -3,13 +3,14 @@ import Carbon
 @testable import GlideBoardCore
 
 private final class DictationTranscriberSpy: DictationTranscribing {
-    var calls: [([Float], String?, Bool)] = []
+    var calls: [(samples: [Float], language: String?, words: Bool, prompt: String?)] = []
     var transcript = DictationTranscript(text: "", words: [])
     var resume: CheckedContinuation<Void, Never>?
 
     func transcribe(samples: [Float], language: String?,
-                    wordTimestamps: Bool) async throws -> DictationTranscript {
-        calls.append((samples, language, wordTimestamps))
+                    wordTimestamps: Bool,
+                    biasPrompt: String?) async throws -> DictationTranscript {
+        calls.append((samples, language, wordTimestamps, biasPrompt))
         if resume != nil {
             await withCheckedContinuation { continuation in resume = continuation }
         }
@@ -72,27 +73,22 @@ func dictationChecks() async {
         try expectEqual(await task.value, .delivered)
         try expectEqual(controller.state, .idle)
         try expectEqual(transcriber.calls.count, 1)
-        try expectEqual(transcriber.calls[0].1, "es")
-        try expectFalse(transcriber.calls[0].2)
+        try expectEqual(transcriber.calls[0].language, "es")
+        try expectFalse(transcriber.calls[0].words)
+        try expectNil(transcriber.calls[0].prompt)
     }
 
-    await c.test("voice sessions request words and remove only their safe prefix") {
+    await c.test("voice sessions deliver plain transcripts without trimming") {
         let transcriber = DictationTranscriberSpy()
-        transcriber.transcript = DictationTranscript(
-            text: "Numa, graba audio, mañana",
-            words: [
-                TranscribedWord(text: "Numa", start: 0, end: 0.2, textRangeUTF16: 0..<4),
-                TranscribedWord(text: "graba", start: 0.25, end: 0.5, textRangeUTF16: 6..<11),
-                TranscribedWord(text: "audio", start: 0.55, end: 0.8, textRangeUTF16: 12..<17),
-                TranscribedWord(text: "mañana", start: 0.9, end: 1.2, textRangeUTF16: 19..<25),
-            ]
-        )
+        transcriber.transcript = DictationTranscript(text: " mañana tenemos ", words: [])
+        // The session audio starts after the command utterance, so the
+        // transcript is already pure dictation.
         let context = VoiceCommandContext(
-            audioReservationID: 1, wakeWordID: "numa",
-            sessionAudioStartSample: 0,
+            audioReservationID: 1, commandPhrase: "Numa, graba",
+            sessionAudioStartSample: 20_000,
             commandDetectionWindowStartSample: 0,
-            commandDetectionWindowEndSample: 13_000,
-            estimatedCommandEndSample: 13_000
+            commandDetectionWindowEndSample: 20_000,
+            estimatedCommandEndSample: 20_000
         )
         var delivered = ""
         let controller = DictationController(
@@ -106,32 +102,11 @@ func dictationChecks() async {
         let outcome = await controller.stop(sessionID: 2, reason: .trailingSilence,
                                             samples: [0.1])
         try expectEqual(outcome, .delivered)
-        try expectEqual(delivered, "mañana")
-        try expectTrue(transcriber.calls[0].2)
-    }
-
-    await c.test("unsafe voice prefix fails closed without delivery") {
-        let transcriber = DictationTranscriberSpy()
-        transcriber.transcript = DictationTranscript(text: "graba audio mañana", words: [])
-        let context = VoiceCommandContext(
-            audioReservationID: 1, wakeWordID: "numa",
-            sessionAudioStartSample: 0,
-            commandDetectionWindowStartSample: 0,
-            commandDetectionWindowEndSample: 10,
-            estimatedCommandEndSample: 10
-        )
-        var deliveries = 0
-        let controller = DictationController(
-            transcriber: transcriber, language: { "es" }, willStart: { _ in },
-            deliver: { _, _, completion in deliveries += 1; completion() },
-            stateChanged: { _ in }
-        )
-        _ = controller.prepare(sessionID: 3, mode: .handsFree,
-                               source: .voiceCommand(context))
-        controller.recordingDidStart(sessionID: 3)
-        try expectEqual(await controller.stop(sessionID: 3, reason: .trailingSilence,
-                                              samples: [0.1]), .unsafeVoicePrefix)
-        try expectEqual(deliveries, 0)
+        try expectEqual(delivered, "mañana tenemos")
+        try expectFalse(transcriber.calls[0].words)
+        // Never the command phrase: a Whisper prompt is "already transcribed
+        // context" and makes the model omit the matching audio.
+        try expectNil(transcriber.calls[0].prompt)
     }
 
     await c.test("stale session callbacks do not change the active session") {
@@ -154,6 +129,19 @@ func dictationChecks() async {
         try expectEqual(DictationState.transcribing(.handsFree).statusText,
                         "Transcribiendo localmente…")
         try expectNil(DictationState.idle.statusText)
+    }
+
+    await c.test("word timings tolerate ASR jitter but reject real jumps") {
+        // A few ms of overlap is clamped to a monotonic timeline.
+        let jitter = try unwrap(WordTimingSanitizer.sanitize(
+            start: 0.95, end: 1.4, previousEnd: 1.0))
+        try expectEqual(jitter.start, 1.0)
+        try expectEqual(jitter.end, 1.4)
+        // Backwards jumps beyond the tolerance are inconsistent transcripts.
+        try expectNil(WordTimingSanitizer.sanitize(
+            start: 0.2, end: 0.5, previousEnd: 2.0))
+        try expectNil(WordTimingSanitizer.sanitize(
+            start: 1.0, end: 0.5, previousEnd: 0))
     }
 
     await c.test("insertion adds a separator only after unspaced draft text") {

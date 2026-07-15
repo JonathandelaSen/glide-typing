@@ -32,6 +32,23 @@ enum DictationDecoding {
     }
 }
 
+/// Whisper word timings routinely overlap the previous word by a few
+/// milliseconds. That jitter is harmless for prefix trimming, so it is clamped
+/// to a monotonic timeline; only a real inconsistency (a backwards jump larger
+/// than the tolerance) fails the transcript.
+enum WordTimingSanitizer {
+    static let maximumOverlap: TimeInterval = 1.0
+
+    static func sanitize(start: TimeInterval, end: TimeInterval,
+                         previousEnd: TimeInterval)
+        -> (start: TimeInterval, end: TimeInterval)?
+    {
+        guard end >= start, start >= previousEnd - maximumOverlap else { return nil }
+        let clampedStart = max(start, previousEnd)
+        return (clampedStart, max(end, clampedStart))
+    }
+}
+
 enum WhisperTranscriptMapper {
     static func map(_ results: [TranscriptionResult],
                     wordTimestamps: Bool) throws -> DictationTranscript
@@ -48,9 +65,11 @@ enum WhisperTranscriptMapper {
         var words: [TranscribedWord] = []
         var previousEnd: TimeInterval = 0
         for word in results.flatMap(\.allWords) {
-            let start = TimeInterval(word.start)
-            let end = TimeInterval(word.end)
-            guard start >= previousEnd, end >= start else {
+            guard let timing = WordTimingSanitizer.sanitize(
+                start: TimeInterval(word.start),
+                end: TimeInterval(word.end),
+                previousEnd: previousEnd
+            ) else {
                 throw WhisperKitDictationError.invalidWordTimings
             }
             let lower = text.utf16.count
@@ -58,11 +77,11 @@ enum WhisperTranscriptMapper {
             let upper = text.utf16.count
             words.append(TranscribedWord(
                 text: word.word,
-                start: start,
-                end: end,
+                start: timing.start,
+                end: timing.end,
                 textRangeUTF16: lower..<upper
             ))
-            previousEnd = end
+            previousEnd = timing.end
         }
         return DictationTranscript(text: text, words: words)
     }
@@ -82,16 +101,22 @@ actor WhisperKitTranscriber: DictationTranscribing {
 
     func transcribe(samples: [Float],
                     language: String?,
-                    wordTimestamps: Bool) async throws -> DictationTranscript
+                    wordTimestamps: Bool,
+                    biasPrompt: String?) async throws -> DictationTranscript
     {
         guard samples.count >= Self.minimumSamples else {
             throw WhisperKitDictationError.recordingTooShort
         }
         let whisperKit = try await loadPipeline()
+        var options = DictationDecoding.options(
+            language: language, wordTimestamps: wordTimestamps)
+        if let biasPrompt, !biasPrompt.isEmpty, let tokenizer = whisperKit.tokenizer {
+            options.promptTokens = tokenizer.encode(text: " " + biasPrompt)
+                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        }
         let results = try await whisperKit.transcribe(
             audioArray: samples,
-            decodeOptions: DictationDecoding.options(
-                language: language, wordTimestamps: wordTimestamps)
+            decodeOptions: options
         )
         let transcript = try WhisperTranscriptMapper.map(
             results, wordTimestamps: wordTimestamps)

@@ -13,7 +13,11 @@ struct DictationTranscript: Equatable, Sendable {
 }
 
 protocol DictationTranscribing: AnyObject {
+    /// `biasPrompt` leans the decoder towards expected vocabulary (the voice
+    /// command phrase at the start of a voice session's audio); nil keeps it
+    /// neutral for plain dictation.
     func transcribe(samples: [Float],
                     language: String?,
-                    wordTimestamps: Bool) async throws -> DictationTranscript
+                    wordTimestamps: Bool,
+                    biasPrompt: String?) async throws -> DictationTranscript
 }

@@ -28,7 +28,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private var dictationPanelHidden = false
     /// Invalidates delayed delivery/overlay work when the next dictation starts.
     private var dictationSessionID: DictationSessionID = 0
-    private var voiceCommandOverlayUntil: Date?
+    /// Phrase of the in-flight voice-command session; while set, the overlay
+    /// shows the green "Habla ahora" light instead of the generic phases.
+    private var activeVoiceCommandPhrase: String?
     /// Plan A: transform the selection of the focused app in place.
     private var transformer: TextTransformer?
     /// Claims the physical Tab key while a ghost is on screen, so the phrase
@@ -332,7 +334,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
 
     private func configureDictation() {
         numaCoordinator?.terminate()
-        let descriptor = VoiceAttentionDescriptor.default(modelID: Settings.attentionModelID)
+        var descriptor = VoiceAttentionDescriptor.default(modelID: Settings.attentionModelID)
+        descriptor.biasPrompt = VoiceCommandGrammar.biasPrompt(for: Settings.voiceCommands)
         // A broken attention model must never disable dictation: fall back to
         // a recognizer that reports itself unavailable and keep the rest of
         // the pipeline (hotkeys, push-to-talk, hands-free) fully wired.
@@ -344,7 +347,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             recognizer = UnavailableVoiceAttentionRecognizer(error: error)
         }
         let executor = NumaAudioExecutor()
-        let pipeline = NumaAudioPipeline(executor: executor)
+        let pipeline = NumaAudioPipeline(executor: executor,
+                                         ringCapacity: descriptor.ringCapacitySamples)
         let capture = MicrophoneCaptureService()
         let transcriber = WhisperKitTranscriber(model: Settings.dictationModel)
         let controller = DictationController(
@@ -375,7 +379,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             soundPlayer: NumaSoundPlayer(),
             soundTheme: { Settings.numaSoundTheme },
             rmsChanged: { [weak self] rms in self?.dictationOverlay.updateRMS(rms) },
-            commandRecognized: { [weak self] in self?.presentVoiceCommandRecognized() }
+            commandRecognized: { [weak self] phrase in
+                self?.presentVoiceCommandRecognized(phrase)
+            },
+            commands: { Settings.voiceCommands },
+            trailingSilenceSeconds: { Settings.handsFreeTrailingSilenceSeconds }
         )
         numaCoordinator = coordinator
         Task { await coordinator.startAtLaunch() }
@@ -389,26 +397,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         }
     }
 
-    private func presentVoiceCommandRecognized() {
-        voiceCommandOverlayUntil = Date().addingTimeInterval(0.6)
-        dictationOverlay.show(.commandRecognized("graba audio"), destination: "Numa")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            guard let self else { return }
-            self.voiceCommandOverlayUntil = nil
-            self.refreshDictationOverlayForCurrentState()
-        }
-    }
-
-    private func refreshDictationOverlayForCurrentState() {
-        guard let state = dictationController?.state else { return }
-        let destination = (dictationTarget ?? .fallback).destinationName
-        switch state {
-        case .preparing: dictationOverlay.show(.preparing, destination: destination)
-        case .recording: dictationOverlay.show(.recording, destination: destination)
-        case .transcribing: dictationOverlay.show(.transcribing, destination: destination)
-        case .delivering: dictationOverlay.show(.inserting, destination: destination)
-        case .idle, .failed: break
-        }
+    /// The audio is already being captured from the end of the command
+    /// utterance, so the green light is honest from this very instant.
+    private func presentVoiceCommandRecognized(_ phrase: String) {
+        activeVoiceCommandPhrase = phrase
+        dictationOverlay.show(.speakNow(phrase),
+                              destination: (dictationTarget ?? .fallback).destinationName)
     }
 
     private func emitDictationTranscript(_ transcript: String,
@@ -443,10 +437,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             setStatusIcon("ear", description: "Numa — Atento")
             numaStatusMenuItem?.title = "Numa: Atento"
             pauseAttentionMenuItem?.title = "Pausar escucha"
-        case .awaitingCommand:
-            setStatusIcon("waveform", description: "Numa — esperando comando")
-            numaStatusMenuItem?.title = "Numa: Te escucho…"
-            dictationOverlay.show(.attending("Numa"), destination: "Numa")
         case .pausedByUser:
             setStatusIcon("pause.circle", description: "Numa — Pausado")
             numaStatusMenuItem?.title = "Numa: Pausado"
@@ -489,6 +479,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         switch state {
         case .idle:
             setStatusIcon("keyboard", description: "Numa")
+            activeVoiceCommandPhrase = nil
             if !dictationDeliveryInProgress {
                 dictationOverlay.hide()
                 dictationTarget = nil
@@ -497,7 +488,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         case .preparing:
             setStatusIcon("mic", description: "Numa — preparando micrófono")
             keyboardView.flash("Preparando micrófono…")
-            if voiceCommandOverlayUntil.map({ $0 > Date() }) != true {
+            if let phrase = activeVoiceCommandPhrase {
+                dictationOverlay.show(.speakNow(phrase),
+                                      destination: (dictationTarget ?? .fallback).destinationName)
+            } else {
                 dictationOverlay.show(.preparing,
                                       destination: (dictationTarget ?? .fallback).destinationName)
             }
@@ -506,12 +500,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             keyboardView.flash(mode == .pushToTalk
                 ? "Dictando… suelta para transcribir"
                 : "Dictando… termina con ⌥L, menú o 🎙")
-            if voiceCommandOverlayUntil.map({ $0 > Date() }) != true {
+            if let phrase = activeVoiceCommandPhrase {
+                dictationOverlay.show(.speakNow(phrase),
+                                      destination: (dictationTarget ?? .fallback).destinationName)
+            } else {
                 dictationOverlay.show(.recording,
                                       destination: (dictationTarget ?? .fallback).destinationName)
             }
         case .transcribing:
             setStatusIcon("waveform", description: "Numa — transcribiendo")
+            activeVoiceCommandPhrase = nil
             keyboardView.flash("WhisperKit está transcribiendo…")
             dictationOverlay.show(.transcribing,
                                   destination: (dictationTarget ?? .fallback).destinationName)
@@ -521,6 +519,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
                                   destination: (dictationTarget ?? .fallback).destinationName)
         case .failed(let message):
             setStatusIcon("keyboard", description: "Numa")
+            activeVoiceCommandPhrase = nil
             keyboardView.flash(message)
             DictationLog.write("fallo: \(message)")
             dictationDeliveryInProgress = false
@@ -1532,6 +1531,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             controller.onSendHotKeyChange = { [weak self] _, _ in self?.applySendHotKey() }
             controller.onDictationModelChange = { [weak self] in self?.configureDictation() }
             controller.onAttentionModelChange = { [weak self] in self?.configureDictation() }
+            // The phrases live inside the recognizer's prompt, so changing a
+            // voice command rebuilds the attention pipeline.
+            controller.onVoiceCommandsChange = { [weak self] in self?.configureDictation() }
             controller.onLanguageChange = { [weak self] lang in self?.switchLanguage(lang) }
             controller.onScaleChange = { [weak self] _ in self?.rebuildPanel() }
             controller.onOpacityChange = { [weak self] value in self?.panel.alphaValue = value }

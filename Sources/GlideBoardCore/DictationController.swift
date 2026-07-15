@@ -26,7 +26,6 @@ enum DictationSessionOutcome: Equatable, Sendable {
     case delivered
     case empty
     case cancelled
-    case unsafeVoicePrefix
     case failed(String)
 }
 
@@ -144,39 +143,20 @@ final class DictationController {
         state = .transcribing(mode)
 
         do {
-            let voiceContext: VoiceCommandContext?
-            if case .voiceCommand(let context) = startSource {
-                voiceContext = context
-            } else {
-                voiceContext = nil
-            }
+            // Voice sessions need no special decoding: their audio starts
+            // after the command utterance, so the transcript is pure
+            // dictation. Never bias the decoder with the command phrase — a
+            // Whisper prompt is "already transcribed context" and makes the
+            // model omit matching audio.
             let transcript = try await transcriber.transcribe(
                 samples: samples,
                 language: language(),
-                wordTimestamps: voiceContext != nil
+                wordTimestamps: false,
+                biasPrompt: nil
             )
             guard activeSessionID == sessionID else { return .cancelled }
 
-            let output: String
-            if let context = voiceContext {
-                let commandEnd = TimeInterval(
-                    context.estimatedCommandEndSample - context.sessionAudioStartSample
-                ) / 16_000
-                switch VoiceCommandPrefixTrimmer.trim(
-                    transcript, wakeWord: context.wakeWordID,
-                    estimatedCommandEnd: commandEnd
-                ) {
-                case .unsafe:
-                    clearSession()
-                    state = .idle
-                    return .unsafeVoicePrefix
-                case .success(let text):
-                    output = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-            } else {
-                output = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-
+            let output = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !output.isEmpty else {
                 clearSession()
                 state = .idle

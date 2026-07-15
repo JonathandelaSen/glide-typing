@@ -4,7 +4,6 @@ enum NumaState: Equatable {
     case stopped
     case starting
     case attentive
-    case awaitingCommand
     case preparing(DictationMode)
     case recording(DictationMode)
     case transcribing(DictationMode)
@@ -26,7 +25,9 @@ final class NumaCoordinator {
     private let soundPlayer: NumaSoundPlaying
     private let soundTheme: () -> NumaSoundTheme
     private let rmsChanged: (Float) -> Void
-    private let commandRecognized: () -> Void
+    private let commandRecognized: (String) -> Void
+    private let commands: () -> [VoiceCommandSetting]
+    private let trailingSilenceSeconds: () -> Double
 
     private var captureGeneration: UInt64 = 0
     private var streamGeneration: UInt64 = 0
@@ -40,13 +41,27 @@ final class NumaCoordinator {
     private var attentionInferenceInFlight = false
     private var attentionInferencePending = false
     private var samplesSinceAttentionWindow = 0
-    private var wakeSessionAudioStartSample: Int64?
-    private var commandDeadlineSample: Int64?
+    /// Utterance already checked up to the length cap without matching a
+    /// command; skip further inference on it until it closes.
+    private var abandonedUtteranceStart: Int64?
+    /// A command is at the start of the utterance, so 0.7 s of audio is the
+    /// minimum worth transcribing and 8 s the cap for repeated checks.
+    private static let minimumDetectionSamples: Int64 = 11_200
+    private static let maximumDetectionSamples: Int64 = 128_000
     private var userAttentionEnabled = true
     private var suspended = false
     /// Tracks the physical key so a tap whose release arrives before
     /// `beginDictation` has run still stops the session it started.
     private var pushToTalkHeld = false
+    /// Rate limit for the "heard speech, no match" diagnostics, so live tests
+    /// can tell "not hearing you" apart from "not understanding you" without
+    /// flooding the log.
+    private var lastUnmatchedSpeechLog = Date.distantPast
+    /// Whisper hallucinates a constant phrase on silent windows; running the
+    /// wake inference without voice-level audio burns CPU and pollutes the
+    /// diagnostics. Starts as "long silence" so launch stays idle until the
+    /// first voiced frame.
+    private var samplesSinceVoice = Int.max / 2
     private var activeSoundTheme: NumaSoundTheme = .crystal
     private var resetAudioTask: Task<Void, Never>?
 
@@ -64,7 +79,9 @@ final class NumaCoordinator {
          soundPlayer: NumaSoundPlaying,
          soundTheme: @escaping () -> NumaSoundTheme = { .crystal },
          rmsChanged: @escaping (Float) -> Void = { _ in },
-         commandRecognized: @escaping () -> Void = {})
+         commandRecognized: @escaping (String) -> Void = { _ in },
+         commands: @escaping () -> [VoiceCommandSetting] = { VoiceCommandSetting.defaults },
+         trailingSilenceSeconds: @escaping () -> Double = { 3.5 })
     {
         self.capture = capture
         self.pipeline = pipeline
@@ -77,6 +94,8 @@ final class NumaCoordinator {
         self.soundTheme = soundTheme
         self.rmsChanged = rmsChanged
         self.commandRecognized = commandRecognized
+        self.commands = commands
+        self.trailingSilenceSeconds = trailingSilenceSeconds
     }
 
     func startAtLaunch() async {
@@ -91,7 +110,7 @@ final class NumaCoordinator {
         do {
             try await capture.start(generation: generation) { [weak self] frame in
                 guard let self else { return }
-                self.pipeline.ingest(samples: frame.samples)
+                self.pipeline.ingest(samples: frame.samples, rms: frame.rms)
                 Task { @MainActor [weak self] in self?.received(frame) }
             }
             guard generation == captureGeneration else { return }
@@ -104,6 +123,7 @@ final class NumaCoordinator {
         } catch {
             guard generation == captureGeneration else { return }
             state = .unavailable("microphone")
+            DictationLog.write("numa: micrófono no disponible — \(error.localizedDescription)")
             notice(error.localizedDescription, 2.4)
             return
         }
@@ -111,6 +131,7 @@ final class NumaCoordinator {
         do {
             try await recognizer.prepare()
             attentionPrepared = true
+            DictationLog.write("numa: atención lista (escuchando el wake word)")
         } catch {
             attentionPrepared = false
             if state == .attentive {
@@ -118,6 +139,7 @@ final class NumaCoordinator {
                 capture.stop(generation: captureGeneration)
                 state = .unavailable("attentionModel")
             }
+            DictationLog.write("numa: modelo de atención no disponible — \(error.localizedDescription)")
             notice(error.localizedDescription, 2.4)
         }
     }
@@ -215,7 +237,9 @@ final class NumaCoordinator {
         activeSessionID = sessionID
         activeMode = mode
         pendingStop = nil
-        silenceDetector = HandsFreeSilenceDetector()
+        silenceDetector = HandsFreeSilenceDetector(
+            trailingSilenceSamples: Int(trailingSilenceSeconds()
+                * Double(descriptor.sampleRate)))
         activeSoundTheme = soundTheme()
         if case .voiceCommand = source {} else {
             soundPlayer.playActivation(theme: activeSoundTheme)
@@ -238,6 +262,7 @@ final class NumaCoordinator {
         let began = await pipeline.beginDictation(sessionID: sessionID, start: start)
         guard activeSessionID == sessionID else { return }
         guard began else {
+            DictationLog.write("numa: el pipeline rechazó la sesión \(sessionID)")
             controller.cancel(sessionID: sessionID)
             clearSession()
             state = .unavailable("audioPipeline")
@@ -250,10 +275,11 @@ final class NumaCoordinator {
             do {
                 try await capture.start(generation: generation) { [weak self] frame in
                     guard let self else { return }
-                    self.pipeline.ingest(samples: frame.samples)
+                    self.pipeline.ingest(samples: frame.samples, rms: frame.rms)
                     Task { @MainActor [weak self] in self?.received(frame) }
                 }
             } catch {
+                DictationLog.write("numa: micrófono falló al iniciar la sesión \(sessionID) — \(error.localizedDescription)")
                 await pipeline.cancelDictation(sessionID: sessionID)
                 controller.cancel(sessionID: sessionID)
                 clearSession()
@@ -294,10 +320,14 @@ final class NumaCoordinator {
         stopInProgress = true
         defer { stopInProgress = false }
         if reason == .initialSilenceTimeout {
+            let deadline = HandsFreeSilenceDetector.initialVoiceDeadlineSamples
+                / descriptor.sampleRate
+            DictationLog.write("numa: sesión \(sessionID) cancelada — \(deadline) s sin voz que dictar")
             await pipeline.cancelDictation(sessionID: sessionID)
             await soundPlayer.playFinish(theme: activeSoundTheme)
             controller.cancel(sessionID: sessionID)
             clearSession()
+            notice("No he oído nada que dictar", 1.6)
             await rearmAfterSession()
             return
         }
@@ -305,6 +335,7 @@ final class NumaCoordinator {
             // The pipeline lost the session (a pause/suspend raced us). Never
             // leave the coordinator parked in .recording with a dead session.
             if activeSessionID == sessionID {
+                DictationLog.write("numa: el pipeline perdió la sesión \(sessionID); se cancela")
                 controller.cancel(sessionID: sessionID)
                 clearSession()
                 await rearmAfterSession()
@@ -314,10 +345,8 @@ final class NumaCoordinator {
         await soundPlayer.playFinish(theme: activeSoundTheme)
         state = .transcribing(mode)
         let outcome = await controller.stop(sessionID: sessionID, reason: reason, samples: samples)
+        DictationLog.write("numa: sesión \(sessionID) terminada (\(mode), \(reason), \(outcome), \(samples.count) muestras)")
         guard activeSessionID == sessionID else { return }
-        if outcome == .unsafeVoicePrefix {
-            notice("No he podido separar la orden del dictado", 2.4)
-        }
         clearSession()
         await rearmAfterSession()
     }
@@ -350,6 +379,11 @@ final class NumaCoordinator {
 
     private func received(_ frame: AudioFrame) {
         rmsChanged(frame.rms)
+        if frame.rms >= descriptor.voiceRMSFloor {
+            samplesSinceVoice = 0
+        } else if samplesSinceVoice < Int.max / 2 {
+            samplesSinceVoice += frame.samples.count
+        }
         if activeMode == .handsFree, case .recording = state {
             let event = silenceDetector.ingest(
                 sampleCount: frame.samples.count,
@@ -366,10 +400,14 @@ final class NumaCoordinator {
             return
         }
 
-        guard attentionPrepared, state == .attentive || state == .awaitingCommand else { return }
+        guard attentionPrepared, state == .attentive else { return }
         samplesSinceAttentionWindow += frame.samples.count
         guard samplesSinceAttentionWindow >= descriptor.hopSamples else { return }
         samplesSinceAttentionWindow %= descriptor.hopSamples
+        // Only work when voice was heard recently: the utterance keeps
+        // growing while the user speaks, and once it closes (0.8 s of
+        // silence) it is consumed well before this gate cuts off the hops.
+        if samplesSinceVoice >= descriptor.windowSamples { return }
         scheduleAttentionInference()
     }
 
@@ -380,69 +418,130 @@ final class NumaCoordinator {
         }
         attentionInferenceInFlight = true
         let generation = streamGeneration
-        let wantsWords = state == .awaitingCommand
         Task { @MainActor [weak self] in
-            guard let self,
-                  let window = await pipeline.ringSnapshot(length: descriptor.windowSamples) else {
-                self?.attentionInferenceFinished()
-                return
-            }
-            do {
-                let transcript = try await recognizer.recognize(
-                    samples: window.samples,
-                    sampleRate: descriptor.sampleRate,
-                    wordTimestamps: wantsWords
-                )
-                guard generation == streamGeneration else {
-                    attentionInferenceFinished()
-                    return
-                }
-                await processAttention(transcript, window: window.range)
-            } catch {
-                if generation == streamGeneration {
-                    state = .unavailable("attentionModel")
-                    notice(error.localizedDescription, 2.4)
-                }
-            }
-            attentionInferenceFinished()
+            guard let self else { return }
+            await self.checkUtterance(generation: generation)
+            self.attentionInferenceFinished()
         }
     }
 
-    private func processAttention(_ transcript: AttentionTranscript,
-                                  window: Range<Int64>) async
-    {
-        switch state {
-        case .attentive:
-            guard VoiceAttentionIntentMatcher.containsWakeWord(transcript.text) else { return }
-            let metrics = await pipeline.metrics()
-            wakeSessionAudioStartSample = window.lowerBound
-            commandDeadlineSample = metrics.nextSample + 48_000
-            streamGeneration &+= 1
-            recognizer.reset()
-            activeSoundTheme = soundTheme()
-            soundPlayer.playActivation(theme: activeSoundTheme)
-            state = .awaitingCommand
-        case .awaitingCommand:
-            guard let commandEnd = VoiceAttentionIntentMatcher.commandEndTime(transcript),
-                  let deadline = commandDeadlineSample,
-                  let sessionStart = wakeSessionAudioStartSample else { return }
-            let absoluteEnd = window.lowerBound + Int64(commandEnd * 16_000)
-            guard absoluteEnd <= deadline else { return }
-            nextSessionID &+= 1
-            let sessionID = nextSessionID
-            guard let context = await pipeline.reserveVoiceAudio(
-                sessionID: sessionID,
-                wakeWordID: "numa",
-                sessionAudioStartSample: sessionStart,
-                commandWindow: window,
-                estimatedCommandEndSample: absoluteEnd
-            ) else { return }
-            commandRecognized()
-            nextSessionID -= 1
-            await beginDictation(mode: .handsFree, source: .voiceCommand(context))
-        default:
-            break
+    private func checkUtterance(generation: UInt64) async {
+        guard let utterance = await pipeline.attentionUtterance() else { return }
+        switch utterance {
+        case .growing(let range):
+            let length = range.upperBound - range.lowerBound
+            guard length >= Self.minimumDetectionSamples,
+                  abandonedUtteranceStart != range.lowerBound else { return }
+            if length > Self.maximumDetectionSamples {
+                // The command lives at the start; if it hasn't matched within
+                // the cap this is ordinary conversation. Stop re-checking it.
+                abandonedUtteranceStart = range.lowerBound
+                return
+            }
+            await detectCommand(in: range, utteranceClosed: false, generation: generation)
+        case .closed(let range):
+            let wasAbandoned = abandonedUtteranceStart == range.lowerBound
+            abandonedUtteranceStart = nil
+            guard !wasAbandoned,
+                  range.upperBound - range.lowerBound >= Self.minimumDetectionSamples
+            else { return }
+            await detectCommand(in: range, utteranceClosed: true, generation: generation)
         }
+    }
+
+    private func detectCommand(in range: Range<Int64>, utteranceClosed: Bool,
+                               generation: UInt64) async
+    {
+        let cappedUpper = min(range.upperBound,
+                              range.lowerBound + Self.maximumDetectionSamples)
+        guard let samples = await pipeline.attentionSamples(
+            in: range.lowerBound..<cappedUpper) else { return }
+        do {
+            // Text-only decode: identical conditions to the validated lab
+            // battery (word timestamps degrade tiny's transcription).
+            let transcript = try await recognizer.recognize(
+                samples: AttentionAudioGain.normalized(samples),
+                sampleRate: descriptor.sampleRate,
+                wordTimestamps: false
+            )
+            guard generation == streamGeneration, state == .attentive else { return }
+            if let match = VoiceCommandGrammar.match(text: transcript.text,
+                                                     commands: commands()) {
+                guard utteranceClosed else {
+                    // Still speaking: wait for the pause. The command must be
+                    // the whole utterance — dictation starts after the green
+                    // light, never in the same breath.
+                    return
+                }
+                guard !match.hasTrailingSpeech else {
+                    DictationLog.write("numa: comando con dictado en la misma frase — rechazado (se enseña la señal)")
+                    notice("Di «\(match.command.phrase)», espera la señal y dicta", 2.4)
+                    return
+                }
+                await startVoiceSession(command: match.command,
+                                        detectedRange: range.lowerBound..<cappedUpper,
+                                        utteranceEnd: range.upperBound)
+            } else if utteranceClosed {
+                if VoiceCommandGrammar.mentionsCommandStart(transcript.text,
+                                                            commands: commands()) {
+                    DictationLog.write("numa: frase con inicio de comando pero sin comando completo")
+                    notice("No te he entendido", 1.2)
+                } else {
+                    logUnmatchedSpeech(transcript, context: "sin comando")
+                }
+            }
+        } catch {
+            if generation == streamGeneration {
+                DictationLog.write("numa: inferencia de atención falló — \(error.localizedDescription)")
+                state = .unavailable("attentionModel")
+                notice(error.localizedDescription, 2.4)
+            }
+        }
+    }
+
+    private func startVoiceSession(command: VoiceCommandSetting,
+                                   detectedRange: Range<Int64>,
+                                   utteranceEnd: Int64) async
+    {
+        // The session audio starts where the command utterance ended: the
+        // transcript never contains the command, and anything spoken before
+        // the green light appears is still in the ring, so nothing is lost.
+        nextSessionID &+= 1
+        let sessionID = nextSessionID
+        guard let context = await pipeline.reserveVoiceAudio(
+            sessionID: sessionID,
+            commandPhrase: command.phrase,
+            sessionAudioStartSample: utteranceEnd,
+            commandWindow: detectedRange,
+            estimatedCommandEndSample: utteranceEnd
+        ) else {
+            let metrics = await pipeline.metrics()
+            DictationLog.write("numa: reserva de audio fallida — sesión de \(metrics.nextSample - detectedRange.lowerBound) muestras (ring \(descriptor.ringCapacitySamples))")
+            return
+        }
+        DictationLog.write("numa: comando aceptado (\(command.action.rawValue)) — dictado por voz")
+        streamGeneration &+= 1
+        recognizer.reset()
+        activeSoundTheme = soundTheme()
+        soundPlayer.playActivation(theme: activeSoundTheme)
+        commandRecognized(command.phrase)
+        // beginDictation allocates the session id itself; hand it this one.
+        nextSessionID -= 1
+        switch command.action {
+        case .record:
+            await beginDictation(mode: .handsFree, source: .voiceCommand(context))
+        }
+    }
+
+    /// Logs only that speech was recognized, never what it said: enough to
+    /// separate "the microphone/model hears you" from "the words don't match".
+    private func logUnmatchedSpeech(_ transcript: AttentionTranscript, context: String) {
+        let length = transcript.text
+            .trimmingCharacters(in: .whitespacesAndNewlines).count
+        guard length > 0,
+              Date().timeIntervalSince(lastUnmatchedSpeechLog) >= 5 else { return }
+        lastUnmatchedSpeechLog = Date()
+        DictationLog.write("numa: atención oyó habla \(context) (\(length) caracteres)")
     }
 
     private func attentionInferenceFinished() {
@@ -450,19 +549,6 @@ final class NumaCoordinator {
         if attentionInferencePending {
             attentionInferencePending = false
             scheduleAttentionInference()
-            return
-        }
-        guard state == .awaitingCommand, let deadline = commandDeadlineSample else { return }
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let next = await pipeline.metrics().nextSample
-            guard state == .awaitingCommand, next >= deadline else { return }
-            wakeSessionAudioStartSample = nil
-            commandDeadlineSample = nil
-            streamGeneration &+= 1
-            recognizer.reset()
-            state = .attentive
-            notice("No te he entendido", 1.2)
         }
     }
 
@@ -470,8 +556,7 @@ final class NumaCoordinator {
         activeSessionID = nil
         activeMode = nil
         pendingStop = nil
-        wakeSessionAudioStartSample = nil
-        commandDeadlineSample = nil
+        abandonedUtteranceStart = nil
     }
 
     func dictationStateDidChange(_ dictationState: DictationState) {

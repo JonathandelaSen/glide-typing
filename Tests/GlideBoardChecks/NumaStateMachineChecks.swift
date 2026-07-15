@@ -38,6 +38,7 @@ private final class AttentionRecognizerFake: VoiceAttentionRecognizing, @uncheck
     private(set) var active = 0
     private(set) var maximumActive = 0
     private(set) var resets = 0
+    private(set) var recognizeCalls = 0
     var prepareError: Error?
 
     func prepare() async throws {
@@ -48,10 +49,12 @@ private final class AttentionRecognizerFake: VoiceAttentionRecognizing, @uncheck
                    wordTimestamps: Bool) async throws -> AttentionTranscript {
         let transcript = lock.withLock {
             active += 1
+            recognizeCalls += 1
             maximumActive = max(maximumActive, active)
-            return transcripts.isEmpty
-                ? AttentionTranscript(text: "", words: [])
-                : transcripts.removeFirst()
+            // The last queued transcript keeps repeating: real inference on a
+            // stable utterance returns the same text on every check.
+            if transcripts.count > 1 { return transcripts.removeFirst() }
+            return transcripts.first ?? AttentionTranscript(text: "", words: [])
         }
         await Task.yield()
         lock.withLock { active -= 1 }
@@ -68,7 +71,8 @@ private final class NumaTranscriberFake: DictationTranscribing {
     var calls = 0
 
     func transcribe(samples: [Float], language: String?,
-                    wordTimestamps: Bool) async throws -> DictationTranscript {
+                    wordTimestamps: Bool,
+                    biasPrompt: String?) async throws -> DictationTranscript {
         calls += 1
         return transcript
     }
@@ -80,7 +84,8 @@ private func makeCoordinator(
     recognizer: AttentionRecognizerFake,
     transcriber: NumaTranscriberFake,
     captured: @escaping (DictationSessionID) -> Void = { _ in },
-    delivered: @escaping (String) -> Void = { _ in }
+    delivered: @escaping (String) -> Void = { _ in },
+    noticed: @escaping (String) -> Void = { _ in }
 ) -> NumaCoordinator {
     let controller = DictationController(
         transcriber: transcriber,
@@ -96,8 +101,10 @@ private func makeCoordinator(
         descriptor: .default(modelID: "tiny"),
         controller: controller,
         stateChanged: { _ in },
-        notice: { _, _ in },
-        soundPlayer: SilentNumaSoundPlayer()
+        notice: { message, _ in noticed(message) },
+        soundPlayer: SilentNumaSoundPlayer(),
+        commands: { [VoiceCommandSetting(action: .record, phrase: "Numa, graba")] },
+        trailingSilenceSeconds: { 2.0 }
     )
 }
 
@@ -224,7 +231,7 @@ func numaStateMachineChecks() async {
         try expectEqual(delivered, ["hola"])
     }
 
-    await c.test("80000 silent samples cancel without Whisper") {
+    await c.test("128000 initial silent samples cancel without Whisper") {
         let capture = CaptureFake()
         let transcriber = NumaTranscriberFake()
         let coordinator = makeCoordinator(
@@ -232,7 +239,7 @@ func numaStateMachineChecks() async {
         await coordinator.startAtLaunch()
         coordinator.toggleHandsFree(source: .button)
         try expectTrue(await waitUntil { coordinator.state == .recording(.handsFree) })
-        capture.emit(Array(repeating: 0, count: 79_999))
+        capture.emit(Array(repeating: 0, count: 127_999))
         await Task.yield()
         try expectEqual(coordinator.state, .recording(.handsFree))
         capture.emit([0])
@@ -240,44 +247,97 @@ func numaStateMachineChecks() async {
         try expectEqual(transcriber.calls, 0)
     }
 
-    await c.test("Numa then exact command starts continuous voice dictation") {
+    await c.test("silent audio never reaches the attention model") {
         let capture = CaptureFake()
         let recognizer = AttentionRecognizerFake()
-        recognizer.transcripts = [
-            AttentionTranscript(text: "Numa", words: []),
-            AttentionTranscript(
-                text: " graba audio",
-                words: [
-                    AttentionWord(text: " graba", start: 0.2, end: 0.5,
-                                  textRangeUTF16: 0..<6),
-                    AttentionWord(text: " audio", start: 0.55, end: 0.8,
-                                  textRangeUTF16: 6..<12),
-                ]
-            )
-        ]
+        let coordinator = makeCoordinator(
+            capture: capture, recognizer: recognizer, transcriber: NumaTranscriberFake())
+        await coordinator.startAtLaunch()
+        capture.emit(Array(repeating: 0, count: 64_000))
+        await Task.yield()
+        try expectEqual(recognizer.recognizeCalls, 0)
+        // Voice within the window re-enables the wake inference.
+        capture.emit(Array(repeating: 0.1, count: 8_000))
+        try expectTrue(await waitUntil { recognizer.recognizeCalls > 0 })
+    }
+
+    await c.test("exact command waits for the pause and dictates without trim") {
+        let capture = CaptureFake()
+        let recognizer = AttentionRecognizerFake()
+        recognizer.transcripts = [AttentionTranscript(text: " ¡Numa, graba!", words: [])]
         let transcriber = NumaTranscriberFake()
-        transcriber.transcript = DictationTranscript(
-            text: "Numa graba audio mañana",
-            words: [
-                TranscribedWord(text: "Numa", start: 0, end: 0.2, textRangeUTF16: 0..<4),
-                TranscribedWord(text: "graba", start: 0.25, end: 0.5, textRangeUTF16: 5..<10),
-                TranscribedWord(text: "audio", start: 0.55, end: 0.8, textRangeUTF16: 11..<16),
-                TranscribedWord(text: "mañana", start: 0.9, end: 1.2, textRangeUTF16: 17..<23),
-            ]
-        )
+        transcriber.transcript = DictationTranscript(text: "mañana tenemos", words: [])
         var delivered = ""
         let coordinator = makeCoordinator(
             capture: capture, recognizer: recognizer, transcriber: transcriber,
             delivered: { delivered = $0 })
         await coordinator.startAtLaunch()
-        capture.emit(Array(repeating: 0.1, count: 32_000))
-        try expectTrue(await waitUntil { coordinator.state == .awaitingCommand })
-        capture.emit(Array(repeating: 0.1, count: 8_000))
+        // The exact command while still speaking does not start a session…
+        capture.emit(Array(repeating: 0.1, count: 24_000))
+        try expectTrue(await waitUntil { recognizer.recognizeCalls > 0 })
+        try expectEqual(coordinator.state, .attentive)
+        // …the pause closes the utterance and the clean session starts.
+        capture.emit(Array(repeating: 0, count: 16_000))
         try expectTrue(await waitUntil { coordinator.state == .recording(.handsFree) })
         capture.emit(Array(repeating: 0.2, count: 100))
         capture.emit(Array(repeating: 0, count: 32_000))
         try expectTrue(await waitUntil { coordinator.state == .attentive })
-        try expectEqual(delivered, "mañana")
+        try expectEqual(delivered, "mañana tenemos")
         try expectEqual(recognizer.maximumActive, 1)
+    }
+
+    await c.test("same-breath dictation is rejected and teaches the signal") {
+        let capture = CaptureFake()
+        let recognizer = AttentionRecognizerFake()
+        recognizer.transcripts = [
+            AttentionTranscript(text: " Numa, graba, mañana tenemos", words: [])
+        ]
+        let transcriber = NumaTranscriberFake()
+        var notices: [String] = []
+        let coordinator = makeCoordinator(
+            capture: capture, recognizer: recognizer, transcriber: transcriber,
+            noticed: { notices.append($0) })
+        await coordinator.startAtLaunch()
+        capture.emit(Array(repeating: 0.1, count: 24_000))
+        capture.emit(Array(repeating: 0, count: 16_000))
+        try expectTrue(await waitUntil {
+            notices.contains("Di «Numa, graba», espera la señal y dicta")
+        })
+        try expectEqual(coordinator.state, .attentive)
+        try expectEqual(transcriber.calls, 0)
+    }
+
+    await c.test("closed speech without the command notifies and stays attentive") {
+        let capture = CaptureFake()
+        let recognizer = AttentionRecognizerFake()
+        recognizer.transcripts = [
+            AttentionTranscript(
+                text: " Numa, apaga",
+                words: [
+                    AttentionWord(text: " Numa,", start: 0.5, end: 0.8,
+                                  textRangeUTF16: 0..<6),
+                    AttentionWord(text: " apaga", start: 0.85, end: 1.1,
+                                  textRangeUTF16: 6..<12),
+                ]
+            ),
+            AttentionTranscript(
+                text: " Numa, apaga",
+                words: [
+                    AttentionWord(text: " Numa,", start: 0.5, end: 0.8,
+                                  textRangeUTF16: 0..<6),
+                    AttentionWord(text: " apaga", start: 0.85, end: 1.1,
+                                  textRangeUTF16: 6..<12),
+                ]
+            )
+        ]
+        var notices: [String] = []
+        let coordinator = makeCoordinator(
+            capture: capture, recognizer: recognizer, transcriber: NumaTranscriberFake(),
+            noticed: { notices.append($0) })
+        await coordinator.startAtLaunch()
+        capture.emit(Array(repeating: 0.1, count: 24_000))
+        capture.emit(Array(repeating: 0, count: 16_000))
+        try expectTrue(await waitUntil { notices.contains("No te he entendido") })
+        try expectEqual(coordinator.state, .attentive)
     }
 }

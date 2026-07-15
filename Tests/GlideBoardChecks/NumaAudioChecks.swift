@@ -38,17 +38,18 @@ func numaAudioChecks() async {
 
     await c.test("hands-free VAD uses exact initial and trailing thresholds") {
         var initial = HandsFreeSilenceDetector()
-        try expectEqual(initial.ingest(sampleCount: 79_999, containsVoice: false), .continue)
+        try expectEqual(initial.ingest(sampleCount: 127_999, containsVoice: false), .continue)
         try expectEqual(initial.ingest(sampleCount: 1, containsVoice: false), .initialSilenceTimeout)
 
-        var trailing = HandsFreeSilenceDetector()
+        // The trailing window is user-configurable per session.
+        var trailing = HandsFreeSilenceDetector(trailingSilenceSamples: 32_000)
         try expectEqual(trailing.ingest(sampleCount: 10, containsVoice: true), .voiceStarted)
         try expectEqual(trailing.ingest(sampleCount: 31_999, containsVoice: false), .continue)
         try expectEqual(trailing.ingest(sampleCount: 1, containsVoice: false), .trailingSilence)
     }
 
     await c.test("voice resets trailing silence") {
-        var detector = HandsFreeSilenceDetector()
+        var detector = HandsFreeSilenceDetector(trailingSilenceSamples: 32_000)
         _ = detector.ingest(sampleCount: 10, containsVoice: true)
         _ = detector.ingest(sampleCount: 20_000, containsVoice: false)
         _ = detector.ingest(sampleCount: 1, containsVoice: true)
@@ -94,7 +95,7 @@ func numaAudioChecks() async {
         pipeline.ingest(samples: Array(0..<20).map(Float.init))
         let reserved = try unwrap(await pipeline.reserveVoiceAudio(
             sessionID: 7,
-            wakeWordID: "numa",
+            commandPhrase: "Numa, graba",
             sessionAudioStartSample: 5,
             commandWindow: 8..<15,
             estimatedCommandEndSample: 14

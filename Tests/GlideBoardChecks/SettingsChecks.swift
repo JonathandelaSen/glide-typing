@@ -74,6 +74,27 @@ func settingsChecks() async {
         try expectTrue(Settings.surroundingContextExcludedApps.contains("com.1password"))
     }
 
+    await c.test("voice commands persist and never decay to an empty list") {
+        let original = UserDefaults.standard.data(forKey: "voiceCommands")
+        defer {
+            if let original {
+                UserDefaults.standard.set(original, forKey: "voiceCommands")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "voiceCommands")
+            }
+        }
+        UserDefaults.standard.removeObject(forKey: "voiceCommands")
+        try expectEqual(Settings.voiceCommands, VoiceCommandSetting.defaults)
+
+        var commands = Settings.voiceCommands
+        commands[0].phrase = "Numa, dicta"
+        Settings.voiceCommands = commands
+        try expectEqual(Settings.voiceCommands[0].phrase, "Numa, dicta")
+
+        Settings.voiceCommands = []
+        try expectEqual(Settings.voiceCommands, VoiceCommandSetting.defaults)
+    }
+
     await c.test("carbonModifiers translates AppKit flags") {
         try expectEqual(carbonModifiers(from: [.command, .option]),
                         UInt32(cmdKey | optionKey))

@@ -31,6 +31,14 @@ let package = Package(
             name: "GlideBoardChecks",
             dependencies: ["GlideBoardCore"],
             path: "Tests/GlideBoardChecks"
+        ),
+        // Dev-only wake-word lab: prints what the attention model hears so
+        // recall of the wake phrase and model sizes can be measured live.
+        // Debug builds only (@testable); it is never bundled into the app.
+        .executableTarget(
+            name: "NumaAttentionLab",
+            dependencies: ["GlideBoardCore"],
+            path: "Tools/NumaAttentionLab"
         )
     ]
 )

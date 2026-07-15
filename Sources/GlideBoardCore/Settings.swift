@@ -109,6 +109,46 @@ enum Settings {
         set { defaults.set(newValue, forKey: "attentionModelID") }
     }
 
+    /// User-configurable voice commands (action → trigger phrase). Falls back
+    /// to the defaults when the stored payload is missing or unreadable, and
+    /// never persists an empty list.
+    static var voiceCommands: [VoiceCommandSetting] {
+        get {
+            guard let data = defaults.data(forKey: "voiceCommands"),
+                  let decoded = try? JSONDecoder().decode([VoiceCommandSetting].self,
+                                                          from: data),
+                  !decoded.isEmpty else { return VoiceCommandSetting.defaults }
+            return decoded
+        }
+        set {
+            let commands = newValue.isEmpty ? VoiceCommandSetting.defaults : newValue
+            guard let data = try? JSONEncoder().encode(commands) else { return }
+            defaults.set(data, forKey: "voiceCommands")
+        }
+    }
+
+    /// Seconds of continuous silence that end a hands-free dictation.
+    /// Generous by default so thinking pauses don't cut the recording.
+    static var handsFreeTrailingSilenceSeconds: Double {
+        get {
+            guard let value = defaults.object(forKey: "handsFreeTrailingSilenceSeconds")
+                    as? Double else { return 3.5 }
+            return min(8, max(1.5, value))
+        }
+        set { defaults.set(min(8, max(1.5, newValue)),
+                           forKey: "handsFreeTrailingSilenceSeconds") }
+    }
+
+    /// Volume for Numa's activation/finish chimes, 0…1.
+    static var numaSoundVolume: Double {
+        get {
+            guard let value = defaults.object(forKey: "numaSoundVolume") as? Double
+            else { return 0.5 }
+            return min(1, max(0, value))
+        }
+        set { defaults.set(min(1, max(0, newValue)), forKey: "numaSoundVolume") }
+    }
+
     static var numaSoundTheme: NumaSoundTheme {
         get {
             NumaSoundTheme(rawValue: defaults.string(forKey: "numaSoundTheme") ?? "")

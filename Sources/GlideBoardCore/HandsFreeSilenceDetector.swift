@@ -8,12 +8,22 @@ enum HandsFreeSilenceEvent: Equatable {
 }
 
 struct HandsFreeSilenceDetector: Sendable {
-    static let initialVoiceDeadlineSamples = 80_000
-    static let trailingSilenceSamples = 32_000
+    /// 8 s to start speaking after the session opens: the user may be
+    /// gathering their thoughts after the green light.
+    static let initialVoiceDeadlineSamples = 128_000
+    /// Default trailing silence; the user-facing setting overrides it so
+    /// thinking pauses don't cut the dictation.
+    static let defaultTrailingSilenceSamples = 56_000
+
+    let trailingSilenceSamples: Int
 
     private var hasVoice = false
     private var initialSamples = 0
     private var trailingSamples = 0
+
+    init(trailingSilenceSamples: Int = HandsFreeSilenceDetector.defaultTrailingSilenceSamples) {
+        self.trailingSilenceSamples = max(8_000, trailingSilenceSamples)
+    }
 
     mutating func ingest(sampleCount: Int, containsVoice: Bool) -> HandsFreeSilenceEvent {
         precondition(sampleCount >= 0)
@@ -26,7 +36,7 @@ struct HandsFreeSilenceDetector: Sendable {
 
         if hasVoice {
             trailingSamples += sampleCount
-            return trailingSamples >= Self.trailingSilenceSamples ? .trailingSilence : .continue
+            return trailingSamples >= trailingSilenceSamples ? .trailingSilence : .continue
         }
 
         initialSamples += sampleCount

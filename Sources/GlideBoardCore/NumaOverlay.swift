@@ -4,7 +4,9 @@ import AppKit
 final class NumaOverlay {
     enum Phase {
         case attending(String)
-        case commandRecognized(String)
+        /// The green light: the command was accepted and dictation audio is
+        /// already being captured — the user can speak from this instant.
+        case speakNow(String)
         case preparing
         case recording
         case transcribing
@@ -113,8 +115,8 @@ private final class NumaOverlayView: NSView {
         switch phase {
         case .attending(let wakeWord):
             return ("Te escucho…", wakeWord)
-        case .commandRecognized(let command):
-            return (command, "Grabación manos libres")
+        case .speakNow(let command):
+            return ("Habla ahora", "«\(command)» → \(destination)")
         case .preparing:
             return ("Preparando micrófono", "Destino: \(destination)")
         case .recording:
@@ -124,7 +126,7 @@ private final class NumaOverlayView: NSView {
         case .inserting:
             return ("Insertando en \(destination)", "El texto anterior se conserva")
         case .notUnderstood:
-            return ("No te he entendido", "Di solo «graba audio»")
+            return ("No te he entendido", "Di el comando y espera la señal")
         case .failed(let message):
             return ("No se pudo iniciar el dictado", message)
         }
@@ -138,6 +140,7 @@ private final class NumaOverlayView: NSView {
     private func drawSignal() {
         let color: NSColor
         switch phase {
+        case .speakNow: color = NSColor(calibratedRed: 0.30, green: 0.85, blue: 0.44, alpha: 1)
         case .recording: color = NSColor(calibratedRed: 0.96, green: 0.30, blue: 0.33, alpha: 1)
         case .failed: color = NSColor(calibratedRed: 0.96, green: 0.48, blue: 0.42, alpha: 1)
         default: color = NSColor(calibratedRed: 0.40, green: 0.67, blue: 1.0, alpha: 1)

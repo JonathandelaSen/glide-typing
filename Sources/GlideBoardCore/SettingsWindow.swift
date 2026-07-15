@@ -64,7 +64,14 @@ private final class SettingsTabViewController: NSTabViewController {
     }
 }
 
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate,
+                                      NSTextFieldDelegate {
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField,
+              voiceCommandFields.contains(field) else { return }
+        saveVoiceCommandPhrase(from: field)
+    }
+
     var onHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onFocusHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationHotKeyChange: ((UInt32, UInt32) -> Void)?
@@ -73,6 +80,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onSendHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onDictationModelChange: (() -> Void)?
     var onAttentionModelChange: (() -> Void)?
+    var onVoiceCommandsChange: (() -> Void)?
     var onLanguageChange: ((Language) -> Void)?
     var onScaleChange: ((Double) -> Void)?
     var onOpacityChange: ((Double) -> Void)?
@@ -92,6 +100,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var dictationLanguagePopup: NSPopUpButton!
     private var attentionModelPopup: NSPopUpButton!
     private var soundThemePopup: NSPopUpButton!
+    private var voiceCommandFields: [NSTextField] = []
+    private var numaVolumeLabel: NSTextField!
+    private var silenceLabel: NSTextField!
     private let soundPlayer = NumaSoundPlayer()
     private var ollamaModelsTask: Task<Void, Never>?
 
@@ -350,9 +361,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildNumaPane() -> NSView {
-        let wakeName = NSTextField(labelWithString: "Numa")
-        wakeName.textColor = .secondaryLabelColor
-
         attentionModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         for model in ["tiny", "base", "small"] where VoiceAttentionModelID.isSupported(model) {
             attentionModelPopup.addItem(withTitle: model)
@@ -373,16 +381,51 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let sample = NSButton(title: "Reproducir muestra", target: self,
                               action: #selector(playNumaSoundSample))
+        let volumeSlider = NSSlider(value: Settings.numaSoundVolume,
+                                    minValue: 0, maxValue: 1,
+                                    target: self, action: #selector(numaVolumeChanged(_:)))
+        volumeSlider.isContinuous = false
+        volumeSlider.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        numaVolumeLabel = makeLabel(scaleText(Settings.numaSoundVolume))
+        let silenceSlider = NSSlider(value: Settings.handsFreeTrailingSilenceSeconds,
+                                     minValue: 1.5, maxValue: 8,
+                                     target: self, action: #selector(silenceWindowChanged(_:)))
+        silenceSlider.isContinuous = false
+        silenceSlider.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        silenceLabel = makeLabel(secondsText(Settings.handsFreeTrailingSilenceSeconds))
+
         let grid = makeGrid([
-            [makeLabel("Nombre de activación:"), wakeName],
             [makeLabel("Modelo de attention:"), attentionModelPopup],
             [makeLabel("Tema de sonido:"), soundThemePopup],
+            [makeLabel("Volumen de los sonidos:"), volumeSlider, numaVolumeLabel],
+            [makeLabel("Fin del dictado por silencio:"), silenceSlider, silenceLabel],
             [makeLabel("Sonidos:"), sample]
         ])
+
+        let commandsTitle = makeLabel("Comandos de voz:")
+        commandsTitle.font = NSFont.boldSystemFont(ofSize: 13)
+        var commandRows: [[NSView]] = []
+        voiceCommandFields.removeAll()
+        for (index, command) in Settings.voiceCommands.enumerated() {
+            let field = NSTextField(string: command.phrase)
+            field.placeholderString = "Frase exacta, p. ej. «Numa, graba»"
+            field.widthAnchor.constraint(equalToConstant: 220).isActive = true
+            field.tag = index
+            field.target = self
+            field.action = #selector(voiceCommandPhraseChanged(_:))
+            field.delegate = self
+            voiceCommandFields.append(field)
+            commandRows.append([makeLabel("\(command.action.displayName):"), field])
+        }
+
         return makePane([
             grid,
-            makeHint("La escucha de activación es local, usa WhisperKit y no guarda audio. " +
-                     "El estado Pausado no se conserva al cerrar Numa.")
+            commandsTitle,
+            makeGrid(commandRows),
+            makeHint("Cada comando se dice de una tirada («Numa, graba, mañana tenemos…»). " +
+                     "La frase configurada guía al reconocedor: valida frases nuevas con " +
+                     "«swift run NumaAttentionLab» antes de fiarte de ellas. " +
+                     "La escucha es local y no guarda audio.")
         ])
     }
 
@@ -422,6 +465,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func scaleText(_ v: Double) -> String { "\(Int(round(v * 100))) %" }
+
+    private func secondsText(_ v: Double) -> String {
+        String(format: "%.1f s", v)
+    }
+
+    /// The window applies to the NEXT dictation; no pipeline rebuild needed.
+    @objc private func silenceWindowChanged(_ sender: NSSlider) {
+        let v = (sender.doubleValue * 2).rounded() / 2 // steps of 0.5 s
+        Settings.handsFreeTrailingSilenceSeconds = v
+        silenceLabel.stringValue = secondsText(v)
+    }
 
     // MARK: - Actions
 
@@ -471,6 +525,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         guard let raw = soundThemePopup.selectedItem?.representedObject as? String,
               let theme = NumaSoundTheme(rawValue: raw) else { return }
         Settings.numaSoundTheme = theme
+    }
+
+    @objc private func voiceCommandPhraseChanged(_ sender: NSTextField) {
+        saveVoiceCommandPhrase(from: sender)
+    }
+
+    /// A blank phrase would leave the action untriggerable, so it reverts to
+    /// the stored value instead of saving.
+    private func saveVoiceCommandPhrase(from field: NSTextField) {
+        var commands = Settings.voiceCommands
+        guard commands.indices.contains(field.tag) else { return }
+        let phrase = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !phrase.isEmpty else {
+            field.stringValue = commands[field.tag].phrase
+            return
+        }
+        guard phrase != commands[field.tag].phrase else { return }
+        commands[field.tag].phrase = phrase
+        Settings.voiceCommands = commands
+        onVoiceCommandsChange?()
+    }
+
+    /// Plays the activation chime at the new level so the volume can be
+    /// judged without triggering Numa.
+    @objc private func numaVolumeChanged(_ sender: NSSlider) {
+        let v = (sender.doubleValue * 20).rounded() / 20 // steps of 0.05
+        Settings.numaSoundVolume = v
+        numaVolumeLabel.stringValue = scaleText(v)
+        soundPlayer.playActivation(theme: Settings.numaSoundTheme)
     }
 
     @objc private func playNumaSoundSample() {

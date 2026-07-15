@@ -14,14 +14,25 @@ struct VoiceAttentionDescriptor: Equatable, Sendable {
     let windowSamples: Int
     let hopSamples: Int
     let voiceRMSFloor: Float
+    /// Optional decoder bias: Whisper leans towards transcribing the words of
+    /// this phrase when the audio is ambiguous (the standard initial-prompt
+    /// trick for custom vocabulary like a wake word). Nil keeps the decoder
+    /// neutral. Experimental — only the lab sets it for now.
+    var biasPrompt: String? = nil
 
     static func `default`(modelID: String) -> VoiceAttentionDescriptor {
+        // Ring budget: wake window (32k) + wake inference latency (~16k) +
+        // command window of 3 s (48k) + command window right context (32k) +
+        // command inference latency (~16k) + safety margin. The plan's 96k
+        // assumed 1 s classifier windows; WhisperKit's 2 s windows and real
+        // inference latency do not fit in 6 s, and an overwritten ring kills
+        // the voice reservation silently.
         VoiceAttentionDescriptor(
             backend: .whisperKit,
             modelID: modelID,
             language: "es",
             sampleRate: 16_000,
-            ringCapacitySamples: 96_000,
+            ringCapacitySamples: 160_000,
             windowSamples: 32_000,
             hopSamples: 8_000,
             voiceRMSFloor: 0.012
@@ -125,7 +136,7 @@ actor WhisperKitVoiceAttentionRecognizer: VoiceAttentionRecognizing {
         }
         let inferenceGeneration = generation.snapshot()
         let whisperKit = try await loadPipeline()
-        let options = DecodingOptions(
+        var options = DecodingOptions(
             task: .transcribe,
             language: descriptor.language,
             temperature: 0,
@@ -136,6 +147,11 @@ actor WhisperKitVoiceAttentionRecognizer: VoiceAttentionRecognizing {
             wordTimestamps: wordTimestamps,
             concurrentWorkerCount: 1
         )
+        if let prompt = descriptor.biasPrompt, !prompt.isEmpty,
+           let tokenizer = whisperKit.tokenizer {
+            options.promptTokens = tokenizer.encode(text: " " + prompt)
+                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        }
         let results = try await whisperKit.transcribe(audioArray: samples,
                                                       decodeOptions: options)
         guard inferenceGeneration == generation.snapshot() else {
@@ -224,40 +240,19 @@ enum VoiceAttentionRecognizerFactory {
     }
 }
 
+/// Lexical normalization shared by the command grammar and the prefix
+/// trimmer. Matching itself lives in VoiceCommandGrammar.
 enum VoiceAttentionIntentMatcher {
-    static func containsWakeWord(_ text: String) -> Bool {
-        lexicalTokens(text).contains("numa")
-    }
-
-    static func containsCommand(_ text: String) -> Bool {
-        let tokens = lexicalTokens(text)
-        let commandStart = tokens.first == "numa" ? 1 : 0
-        guard tokens.count >= commandStart + 2 else { return false }
-        return tokens[commandStart] == "graba" && tokens[commandStart + 1] == "audio"
-    }
-
-    static func commandEndTime(_ transcript: AttentionTranscript) -> TimeInterval? {
-        let tokens = transcript.words.map { normalize($0.text) }
-        let commandStart = tokens.first == "numa" ? 1 : 0
-        guard tokens.count >= commandStart + 2,
-              tokens[commandStart] == "graba",
-              tokens[commandStart + 1] == "audio" else { return nil }
-        return transcript.words[commandStart + 1].end
-    }
-
-    private static func lexicalTokens(_ text: String) -> [String] {
-        text.split(whereSeparator: { $0.isWhitespace })
-            .map(String.init)
-            .map(normalize)
-            .filter { !$0.isEmpty }
-    }
-
     static func normalize(_ token: String) -> String {
         let folded = token.folding(options: [.diacriticInsensitive, .caseInsensitive],
                                    locale: Locale(identifier: "es_ES"))
-        return folded.trimmingCharacters(
+        let cleaned = folded.trimmingCharacters(
             in: .punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines)
         )
             .lowercased()
+        // "graba" and "grava" are homophones in Spanish; the ASR picks either
+        // spelling for the same acoustics. This is spelling tolerance for the
+        // canonical command, not a synonym.
+        return cleaned == "grava" ? "graba" : cleaned
     }
 }

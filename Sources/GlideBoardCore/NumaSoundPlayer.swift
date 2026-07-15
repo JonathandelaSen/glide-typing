@@ -81,6 +81,8 @@ final class NumaSoundPlayer: NumaSoundPlaying {
         let name = "\(theme.rawValue)-\(suffix)"
         guard let url = Bundle.main.url(forResource: name, withExtension: "aiff",
                                         subdirectory: "NumaSounds") else { return nil }
-        return NSSound(contentsOf: url, byReference: true)
+        let sound = NSSound(contentsOf: url, byReference: true)
+        sound?.volume = Float(Settings.numaSoundVolume)
+        return sound
     }
 }
