@@ -59,6 +59,7 @@ final class NumaAudioPipeline: @unchecked Sendable {
         var utteranceStart: Int64?
         var utteranceSilentSamples = 0
         var closedUtterance: Range<Int64>?
+        var utteranceGate = AdaptiveVoiceGate()
 
         init(ringCapacity: Int) {
             ring = AudioRingBuffer(capacity: ringCapacity)
@@ -72,18 +73,14 @@ final class NumaAudioPipeline: @unchecked Sendable {
     }
 
     private let state: State
-    private let voiceRMSFloor: Float
 
-    init(executor: NumaAudioExecutor, ringCapacity: Int = 96_000,
-         voiceRMSFloor: Float = 0.012) {
+    init(executor: NumaAudioExecutor, ringCapacity: Int = 96_000) {
         self.executor = executor
-        self.voiceRMSFloor = voiceRMSFloor
         state = State(ringCapacity: ringCapacity)
     }
 
     func ingest(samples: [Float], rms: Float? = nil) {
         guard !samples.isEmpty else { return }
-        let voiceFloor = voiceRMSFloor
         executor.enqueue { [state] in
             state.ring.append(samples)
             switch state.routing {
@@ -91,7 +88,8 @@ final class NumaAudioPipeline: @unchecked Sendable {
                 state.sessionSamples.append(contentsOf: samples)
             case .attentive:
                 let frameRMS = rms ?? AudioFrame(samples: samples).rms
-                if frameRMS >= voiceFloor {
+                if state.utteranceGate.isVoice(rms: frameRMS,
+                                               continuing: state.utteranceStart != nil) {
                     if state.utteranceStart == nil {
                         state.utteranceStart = max(
                             state.ring.availableRange.lowerBound,

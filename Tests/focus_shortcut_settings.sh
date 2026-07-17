@@ -16,8 +16,11 @@ precondition(Settings.focusHotKeyModifiers == UInt32(cmdKey | optionKey | shiftK
 SWIFT
 
 swiftc \
-    "$repo_root/Sources/GlideBoard/KeyboardLayout.swift" \
-    "$repo_root/Sources/GlideBoard/Settings.swift" \
+    "$repo_root/Sources/GlideBoardCore/KeyboardLayout.swift" \
+    "$repo_root/Sources/GlideBoardCore/EmojiCatalog.swift" \
+    "$repo_root/Sources/GlideBoardCore/Settings.swift" \
+    "$repo_root/Sources/GlideBoardCore/VoiceCommands.swift" \
+    "$repo_root/Sources/GlideBoardCore/NumaSoundPlayer.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/focus-shortcut-settings"
 

@@ -6,6 +6,9 @@ final class ShortcutField: NSButton {
     var keyCode: UInt32 = 0
     var carbonMods: UInt32 = 0
     var onChange: ((UInt32, UInt32) -> Void)?
+    /// Returns a message when the combo collides with another Numa action;
+    /// the recording is rejected and the previous shortcut kept.
+    var validate: ((UInt32, UInt32) -> String?)?
     private var monitor: Any?
 
     convenience init(keyCode: UInt32, carbonMods: UInt32) {
@@ -38,7 +41,13 @@ final class ShortcutField: NSButton {
                 NSSound.beep()
                 return nil
             }
-            self.keyCode = UInt32(event.keyCode)
+            let code = UInt32(event.keyCode)
+            if let conflict = self.validate?(code, mods) {
+                self.endRecording()
+                ShortcutRecording.presentConflict(conflict, in: self.window)
+                return nil
+            }
+            self.keyCode = code
             self.carbonMods = mods
             self.endRecording()
             self.onChange?(self.keyCode, self.carbonMods)
@@ -50,6 +59,85 @@ final class ShortcutField: NSButton {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         refreshTitle()
+    }
+}
+
+/// Records an *optional* shortcut: catalog actions start unset and stay unset
+/// until the user assigns one. Backspace while recording clears it.
+final class OptionalShortcutField: NSButton {
+    private(set) var shortcut: ActionShortcut?
+    var onChange: ((ActionShortcut?) -> Void)?
+    var validate: ((UInt32, UInt32) -> String?)?
+    private var monitor: Any?
+
+    convenience init(shortcut: ActionShortcut?) {
+        self.init(frame: .zero)
+        self.shortcut = shortcut
+        bezelStyle = .rounded
+        setButtonType(.momentaryPushIn)
+        target = self
+        action = #selector(beginRecording)
+        refreshTitle()
+    }
+
+    private func refreshTitle() {
+        title = shortcut.map {
+            shortcutDescription(keyCode: $0.keyCode, modifiers: $0.modifiers)
+        } ?? "Not set"
+    }
+
+    @objc private func beginRecording() {
+        guard monitor == nil else { return }
+        title = "Press keys… (⌫ clears, ⎋ cancels)"
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if event.keyCode == 53 {
+                self.endRecording()
+                return nil
+            }
+            let mods = carbonModifiers(from: event.modifierFlags)
+            if event.keyCode == 51, mods == 0 {
+                self.shortcut = nil
+                self.endRecording()
+                self.onChange?(nil)
+                return nil
+            }
+            if mods & ~UInt32(shiftKey) == 0 {
+                NSSound.beep()
+                return nil
+            }
+            let code = UInt32(event.keyCode)
+            if let conflict = self.validate?(code, mods) {
+                self.endRecording()
+                ShortcutRecording.presentConflict(conflict, in: self.window)
+                return nil
+            }
+            self.shortcut = ActionShortcut(keyCode: code, modifiers: mods)
+            self.endRecording()
+            self.onChange?(self.shortcut)
+            return nil
+        }
+    }
+
+    private func endRecording() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        refreshTitle()
+    }
+}
+
+enum ShortcutRecording {
+    @MainActor
+    static func presentConflict(_ message: String, in window: NSWindow?) {
+        NSSound.beep()
+        let alert = NSAlert()
+        alert.messageText = "Shortcut already in use"
+        alert.informativeText = message
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 }
 
@@ -78,6 +166,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     var onHandsFreeHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onTransformHotKeyChange: ((UInt32, UInt32) -> Void)?
     var onSendHotKeyChange: ((UInt32, UInt32) -> Void)?
+    var onActionShortcutsChange: (() -> Void)?
     var onDictationModelChange: (() -> Void)?
     var onAttentionModelChange: (() -> Void)?
     var onVoiceCommandsChange: (() -> Void)?
@@ -91,6 +180,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
     private var dictionaryView: NSTextView!
     private var hoverCheck: NSButton!
+    private var doubleOptionCheck: NSButton!
     private var scaleLabel: NSTextField!
     private var opacityLabel: NSTextField!
     private var languagePopup: NSPopUpButton!
@@ -225,6 +315,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
     private func buildShortcutsPane() -> NSView {
         let shortcutField = ShortcutField(keyCode: Settings.hotKeyCode,
                                           carbonMods: Settings.hotKeyModifiers)
+        shortcutField.validate = validator(excluding: "Mostrar u ocultar el teclado")
         shortcutField.onChange = { [weak self] code, mods in
             Settings.hotKeyCode = code
             Settings.hotKeyModifiers = mods
@@ -233,6 +324,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         let focusShortcutField = ShortcutField(keyCode: Settings.focusHotKeyCode,
                                                carbonMods: Settings.focusHotKeyModifiers)
+        focusShortcutField.validate = validator(excluding: "Escribir en el borrador")
         focusShortcutField.onChange = { [weak self] code, mods in
             Settings.focusHotKeyCode = code
             Settings.focusHotKeyModifiers = mods
@@ -241,6 +333,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         let dictationShortcutField = ShortcutField(keyCode: Settings.dictationHotKeyCode,
                                                    carbonMods: Settings.dictationHotKeyModifiers)
+        dictationShortcutField.validate = validator(excluding: "Dictado (mantener pulsado)")
         dictationShortcutField.onChange = { [weak self] code, mods in
             Settings.dictationHotKeyCode = code
             Settings.dictationHotKeyModifiers = mods
@@ -249,6 +342,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         let transformShortcutField = ShortcutField(keyCode: Settings.transformHotKeyCode,
                                                    carbonMods: Settings.transformHotKeyModifiers)
+        transformShortcutField.validate = validator(excluding: "Transformar / instrucción")
         transformShortcutField.onChange = { [weak self] code, mods in
             Settings.transformHotKeyCode = code
             Settings.transformHotKeyModifiers = mods
@@ -257,6 +351,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
 
         let sendShortcutField = ShortcutField(keyCode: Settings.sendHotKeyCode,
                                               carbonMods: Settings.sendHotKeyModifiers)
+        sendShortcutField.validate = validator(excluding: "Enviar el borrador")
         sendShortcutField.onChange = { [weak self] code, mods in
             Settings.sendHotKeyCode = code
             Settings.sendHotKeyModifiers = mods
@@ -266,6 +361,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
         let handsFreeShortcutField = ShortcutField(
             keyCode: Settings.handsFreeDictationHotKeyCode,
             carbonMods: Settings.handsFreeDictationHotKeyModifiers)
+        handsFreeShortcutField.validate = validator(excluding: "Dictado manos libres")
         handsFreeShortcutField.onChange = { [weak self] code, mods in
             Settings.handsFreeDictationHotKeyCode = code
             Settings.handsFreeDictationHotKeyModifiers = mods
@@ -281,9 +377,88 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate,
             [makeLabel("Enviar el borrador:"), sendShortcutField]
         ])
 
+        let paletteTitle = makeLabel("Command palette")
+        paletteTitle.font = NSFont.boldSystemFont(ofSize: 13)
+
+        doubleOptionCheck = NSButton(
+            checkboxWithTitle: "Open with a double Option tap (⌥⌥)",
+            target: self, action: #selector(doubleOptionChanged(_:)))
+        doubleOptionCheck.state = Settings.doubleOptionPaletteEnabled ? .on : .off
+
+        let actionsGrid = makeGrid([
+            [makeLabel("Command palette:"),
+             makeOptionalShortcutField(for: .togglePalette, name: "Command palette")],
+            [makeLabel("Pause or resume attention:"),
+             makeOptionalShortcutField(for: .toggleAttention,
+                                       name: "Pause or resume attention")],
+            [makeLabel("Open settings:"),
+             makeOptionalShortcutField(for: .openSettings, name: "Open settings")],
+            [makeLabel("Launcher:"), doubleOptionCheck]
+        ])
+
         let hint = makeHint("Los atajos funcionan en todo el sistema. " +
-                            "Haz clic en uno y pulsa la combinación nueva; ⎋ cancela.")
-        return makePane([grid, hint])
+                            "Haz clic en uno y pulsa la combinación nueva; ⎋ cancela. " +
+                            "Palette shortcuts are optional: none is assigned until " +
+                            "you record one, and ⌫ clears it. Voice phrases are " +
+                            "edited in the Numa tab.")
+        return makePane([grid, paletteTitle, actionsGrid, hint])
+    }
+
+    /// Optional per-action shortcut row: persists into
+    /// `Settings.actionShortcuts` and never assigns a default.
+    private func makeOptionalShortcutField(for id: NumaActionID,
+                                           name: String) -> OptionalShortcutField {
+        let field = OptionalShortcutField(
+            shortcut: Settings.actionShortcuts[id.rawValue])
+        field.validate = validator(excluding: name)
+        field.onChange = { [weak self] shortcut in
+            var map = Settings.actionShortcuts
+            map[id.rawValue] = shortcut
+            Settings.actionShortcuts = map
+            self?.onActionShortcutsChange?()
+        }
+        return field
+    }
+
+    /// Conflict check across every Numa shortcut (legacy and optional),
+    /// excluding the row being edited.
+    private func validator(excluding name: String) -> (UInt32, UInt32) -> String? {
+        { keyCode, modifiers in
+            let owners = Self.shortcutOwners().filter { $0.name != name }
+            return ShortcutConflicts.conflict(keyCode: keyCode, modifiers: modifiers,
+                                              among: owners)
+                .map { "Already assigned to “\($0)”." }
+        }
+    }
+
+    private static func shortcutOwners()
+        -> [(name: String, keyCode: UInt32, modifiers: UInt32)]
+    {
+        var owners: [(String, UInt32, UInt32)] = [
+            ("Mostrar u ocultar el teclado", Settings.hotKeyCode, Settings.hotKeyModifiers),
+            ("Escribir en el borrador", Settings.focusHotKeyCode, Settings.focusHotKeyModifiers),
+            ("Dictado (mantener pulsado)", Settings.dictationHotKeyCode,
+             Settings.dictationHotKeyModifiers),
+            ("Dictado manos libres", Settings.handsFreeDictationHotKeyCode,
+             Settings.handsFreeDictationHotKeyModifiers),
+            ("Transformar / instrucción", Settings.transformHotKeyCode,
+             Settings.transformHotKeyModifiers),
+            ("Enviar el borrador", Settings.sendHotKeyCode, Settings.sendHotKeyModifiers)
+        ]
+        let names: [NumaActionID: String] = [
+            .togglePalette: "Command palette",
+            .toggleAttention: "Pause or resume attention",
+            .openSettings: "Open settings"
+        ]
+        for (raw, shortcut) in Settings.actionShortcuts.sorted(by: { $0.key < $1.key }) {
+            let name = NumaActionID(rawValue: raw).flatMap { names[$0] } ?? raw
+            owners.append((name, shortcut.keyCode, shortcut.modifiers))
+        }
+        return owners
+    }
+
+    @objc private func doubleOptionChanged(_ sender: NSButton) {
+        Settings.doubleOptionPaletteEnabled = sender.state == .on
     }
 
     private func buildDictationPane() -> NSView {

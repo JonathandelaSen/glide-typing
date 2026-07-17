@@ -239,20 +239,3 @@ enum VoiceAttentionRecognizerFactory {
         return WhisperKitVoiceAttentionRecognizer(descriptor: descriptor)
     }
 }
-
-/// Lexical normalization shared by the command grammar and the prefix
-/// trimmer. Matching itself lives in VoiceCommandGrammar.
-enum VoiceAttentionIntentMatcher {
-    static func normalize(_ token: String) -> String {
-        let folded = token.folding(options: [.diacriticInsensitive, .caseInsensitive],
-                                   locale: Locale(identifier: "es_ES"))
-        let cleaned = folded.trimmingCharacters(
-            in: .punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines)
-        )
-            .lowercased()
-        // "graba" and "grava" are homophones in Spanish; the ASR picks either
-        // spelling for the same acoustics. This is spelling tolerance for the
-        // canonical command, not a synonym.
-        return cleaned == "grava" ? "graba" : cleaned
-    }
-}

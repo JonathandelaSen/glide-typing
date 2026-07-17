@@ -10,6 +10,7 @@ enum DictationStartSource: Equatable, Sendable {
     case handsFreeHotKey
     case menu
     case button
+    case palette
     case voiceCommand(VoiceCommandContext)
 }
 
@@ -18,6 +19,7 @@ enum DictationStopReason: Equatable, Sendable {
     case toggleShortcut
     case menu
     case button
+    case palette
     case trailingSilence
     case initialSilenceTimeout
 }

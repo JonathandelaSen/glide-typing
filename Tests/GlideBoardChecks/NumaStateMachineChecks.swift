@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 private final class CaptureFake: MicrophoneCapturing {
     var isRunning = false
+    var onConfigurationChange: (() -> Void)?
     var starts: [UInt64] = []
     var stops: [UInt64] = []
     var handler: (@Sendable (AudioFrame) -> Void)?
@@ -245,6 +246,39 @@ func numaStateMachineChecks() async {
         capture.emit([0])
         try expectTrue(await waitUntil { coordinator.state == .attentive })
         try expectEqual(transcriber.calls, 0)
+    }
+
+    await c.test("an audio device change restarts capture and re-arms") {
+        let capture = CaptureFake()
+        let coordinator = makeCoordinator(
+            capture: capture, recognizer: AttentionRecognizerFake(),
+            transcriber: NumaTranscriberFake())
+        await coordinator.startAtLaunch()
+        try expectEqual(capture.starts, [1])
+        capture.onConfigurationChange?()
+        try expectTrue(await waitUntil {
+            capture.starts.count == 2 && coordinator.state == .attentive
+        })
+    }
+
+    await c.test("a session without one voiced frame is discarded, not delivered") {
+        let capture = CaptureFake()
+        let transcriber = NumaTranscriberFake()
+        var delivered: [String] = []
+        var notices: [String] = []
+        let coordinator = makeCoordinator(
+            capture: capture, recognizer: AttentionRecognizerFake(), transcriber: transcriber,
+            delivered: { delivered.append($0) }, noticed: { notices.append($0) })
+        await coordinator.startAtLaunch()
+        coordinator.toggleHandsFree(source: .button)
+        try expectTrue(await waitUntil { coordinator.state == .recording(.handsFree) })
+        // A mute device delivers frames of pure zeros.
+        capture.emit(Array(repeating: 0, count: 16_000))
+        coordinator.toggleHandsFree(source: .button)
+        try expectTrue(await waitUntil { coordinator.state == .attentive })
+        try expectEqual(transcriber.calls, 0)
+        try expectTrue(delivered.isEmpty)
+        try expectTrue(notices.contains("No he oído nada que dictar"))
     }
 
     await c.test("silent audio never reaches the attention model") {

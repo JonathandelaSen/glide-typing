@@ -45,7 +45,7 @@ send("z", modifiers: [.command, .shift])
 SWIFT
 
 swiftc \
-    "$repo_root/Sources/GlideBoard/ComposerTextView.swift" \
+    "$repo_root/Sources/GlideBoardCore/ComposerTextView.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/board-editing-shortcuts"
 

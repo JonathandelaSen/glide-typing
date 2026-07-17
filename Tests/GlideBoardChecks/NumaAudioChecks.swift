@@ -57,6 +57,25 @@ func numaAudioChecks() async {
         try expectEqual(detector.ingest(sampleCount: 1, containsVoice: false), .trailingSilence)
     }
 
+    await c.test("the adaptive gate follows the device noise floor") {
+        // Quiet Bluetooth headset: noise ~0.0005, speech peaks ~0.006.
+        var quiet = AdaptiveVoiceGate(initialNoiseRMS: 0.0005)
+        try expectTrue(quiet.isVoice(rms: 0.006, continuing: false))
+        try expectTrue(quiet.isVoice(rms: 0.002, continuing: true))
+        try expectFalse(quiet.isVoice(rms: 0.001, continuing: false))
+
+        // Loud environment: the floors clamp at the old fixed thresholds.
+        var noisy = AdaptiveVoiceGate(initialNoiseRMS: 0.02)
+        try expectEqual(noisy.startFloor, 0.012)
+        try expectFalse(noisy.isVoice(rms: 0.011, continuing: false))
+        try expectTrue(noisy.isVoice(rms: 0.013, continuing: false))
+
+        // Sustained silence drags the noise estimate (and floors) down.
+        var adapting = AdaptiveVoiceGate(initialNoiseRMS: 0.01)
+        for _ in 0..<400 { _ = adapting.isVoice(rms: 0.0003, continuing: false) }
+        try expectTrue(adapting.isVoice(rms: 0.005, continuing: false))
+    }
+
     await c.test("pipeline and producer share one serial executor") {
         let executor = NumaAudioExecutor(label: "checks.shared")
         let pipeline = NumaAudioPipeline(executor: executor)

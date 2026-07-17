@@ -62,8 +62,15 @@ final class NumaCoordinator {
     /// diagnostics. Starts as "long silence" so launch stays idle until the
     /// first voiced frame.
     private var samplesSinceVoice = Int.max / 2
+    /// Learns the current input device's noise floor; thresholds ride on it.
+    private var voiceGate = AdaptiveVoiceGate()
     private var activeSoundTheme: NumaSoundTheme = .crystal
     private var resetAudioTask: Task<Void, Never>?
+    /// Per-session VAD diagnostics (counts only, never content): what share
+    /// of the recording the detector heard as voice, and the loudest frame.
+    private var sessionTotalFrames = 0
+    private var sessionVoicedFrames = 0
+    private var sessionPeakRMS: Float = 0
 
     private(set) var state: NumaState = .stopped {
         didSet { stateChanged(state) }
@@ -100,6 +107,9 @@ final class NumaCoordinator {
 
     func startAtLaunch() async {
         guard state == .stopped else { return }
+        capture.onConfigurationChange = { [weak self] in
+            self?.handleAudioConfigurationChange()
+        }
         state = .starting
         if let resetAudioTask {
             await resetAudioTask.value
@@ -159,6 +169,7 @@ final class NumaCoordinator {
             let reason: DictationStopReason = switch source {
             case .menu: .menu
             case .button: .button
+            case .palette: .palette
             default: .toggleShortcut
             }
             requestStop(reason, expectedMode: .handsFree)
@@ -212,6 +223,32 @@ final class NumaCoordinator {
         }
     }
 
+    /// The system switched audio devices: the engine keeps pulling zeros
+    /// from the old one, so tear capture down and bring it back up on the
+    /// new device. An in-flight session's audio is already dead — cancel it.
+    private func handleAudioConfigurationChange() {
+        DictationLog.write("numa: cambio de configuración de audio — reiniciando captura")
+        streamGeneration &+= 1
+        recognizer.reset()
+        if let sessionID = activeSessionID {
+            controller.cancel(sessionID: sessionID)
+            Task { await pipeline.cancelDictation(sessionID: sessionID) }
+            notice("El micrófono cambió; dictado cancelado", 2.0)
+        }
+        clearSession()
+        resetAudioTask = Task { await pipeline.resetAudio() }
+        captureGeneration &+= 1
+        capture.stop(generation: captureGeneration)
+        if suspended {
+            state = .suspended
+        } else if !userAttentionEnabled {
+            state = .pausedByUser
+        } else {
+            state = .stopped
+            Task { await startAtLaunch() }
+        }
+    }
+
     func terminate() {
         streamGeneration &+= 1
         recognizer.reset()
@@ -240,6 +277,9 @@ final class NumaCoordinator {
         silenceDetector = HandsFreeSilenceDetector(
             trailingSilenceSamples: Int(trailingSilenceSeconds()
                 * Double(descriptor.sampleRate)))
+        sessionTotalFrames = 0
+        sessionVoicedFrames = 0
+        sessionPeakRMS = 0
         activeSoundTheme = soundTheme()
         if case .voiceCommand = source {} else {
             soundPlayer.playActivation(theme: activeSoundTheme)
@@ -322,7 +362,20 @@ final class NumaCoordinator {
         if reason == .initialSilenceTimeout {
             let deadline = HandsFreeSilenceDetector.initialVoiceDeadlineSamples
                 / descriptor.sampleRate
-            DictationLog.write("numa: sesión \(sessionID) cancelada — \(deadline) s sin voz que dictar")
+            DictationLog.write("numa: sesión \(sessionID) cancelada — \(deadline) s sin voz que dictar (\(voiceStats()))")
+            await pipeline.cancelDictation(sessionID: sessionID)
+            await soundPlayer.playFinish(theme: activeSoundTheme)
+            controller.cancel(sessionID: sessionID)
+            clearSession()
+            notice("No he oído nada que dictar", 1.6)
+            await rearmAfterSession()
+            return
+        }
+        // A recording without one single voiced frame is a mute microphone,
+        // not dictation: Whisper hallucinates text on silence and that text
+        // must never reach the target.
+        if sessionTotalFrames > 0, sessionVoicedFrames == 0 {
+            DictationLog.write("numa: sesión \(sessionID) descartada — audio sin voz (\(voiceStats())); ¿micrófono mudo?")
             await pipeline.cancelDictation(sessionID: sessionID)
             await soundPlayer.playFinish(theme: activeSoundTheme)
             controller.cancel(sessionID: sessionID)
@@ -345,7 +398,7 @@ final class NumaCoordinator {
         await soundPlayer.playFinish(theme: activeSoundTheme)
         state = .transcribing(mode)
         let outcome = await controller.stop(sessionID: sessionID, reason: reason, samples: samples)
-        DictationLog.write("numa: sesión \(sessionID) terminada (\(mode), \(reason), \(outcome), \(samples.count) muestras)")
+        DictationLog.write("numa: sesión \(sessionID) terminada (\(mode), \(reason), \(outcome), \(samples.count) muestras, \(voiceStats()))")
         guard activeSessionID == sessionID else { return }
         clearSession()
         await rearmAfterSession()
@@ -379,15 +432,25 @@ final class NumaCoordinator {
 
     private func received(_ frame: AudioFrame) {
         rmsChanged(frame.rms)
-        if frame.rms >= descriptor.voiceRMSFloor {
+        // One adaptive voice decision per frame, shared by every consumer so
+        // they agree on what counts as speech on the current device.
+        let continuing = (activeMode == .handsFree && silenceDetector.voiceStarted)
+            || samplesSinceVoice == 0
+        let voiced = voiceGate.isVoice(rms: frame.rms, continuing: continuing)
+        if voiced {
             samplesSinceVoice = 0
         } else if samplesSinceVoice < Int.max / 2 {
             samplesSinceVoice += frame.samples.count
         }
+        if activeSessionID != nil, case .recording = state {
+            sessionTotalFrames += 1
+            sessionPeakRMS = max(sessionPeakRMS, frame.rms)
+            if voiced { sessionVoicedFrames += 1 }
+        }
         if activeMode == .handsFree, case .recording = state {
             let event = silenceDetector.ingest(
                 sampleCount: frame.samples.count,
-                containsVoice: frame.rms >= descriptor.voiceRMSFloor
+                containsVoice: voiced
             )
             switch event {
             case .initialSilenceTimeout:
@@ -531,6 +594,12 @@ final class NumaCoordinator {
         case .record:
             await beginDictation(mode: .handsFree, source: .voiceCommand(context))
         }
+    }
+
+    private func voiceStats() -> String {
+        guard sessionTotalFrames > 0 else { return "sin frames" }
+        let percent = sessionVoicedFrames * 100 / sessionTotalFrames
+        return String(format: "voz %d%% · pico rms %.3f", percent, sessionPeakRMS)
     }
 
     /// Logs only that speech was recognized, never what it said: enough to

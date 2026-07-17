@@ -21,6 +21,10 @@ enum MicrophoneCaptureError: LocalizedError {
 @MainActor
 protocol MicrophoneCapturing: AnyObject {
     var isRunning: Bool { get }
+    /// Fired when the system audio configuration changes (input device
+    /// switched, headphones connected…). The engine keeps pulling from the
+    /// OLD device and delivers pure zeros, so the owner must restart capture.
+    var onConfigurationChange: (() -> Void)? { get set }
     func start(generation: UInt64,
                frameHandler: @escaping @Sendable (AudioFrame) -> Void) async throws
     func stop(generation: UInt64)
@@ -35,8 +39,30 @@ final class MicrophoneCaptureService: MicrophoneCapturing {
     private var converter: AVAudioConverter?
     private var currentGeneration: UInt64 = 0
     private var tapInstalled = false
+    private var configurationObserver: NSObjectProtocol?
+
+    var onConfigurationChange: (() -> Void)?
 
     var isRunning: Bool { engine.isRunning && tapInstalled }
+
+    init() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.tapInstalled else { return }
+                self.onConfigurationChange?()
+            }
+        }
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
+    }
 
     func start(generation: UInt64,
                frameHandler: @escaping @Sendable (AudioFrame) -> Void) async throws

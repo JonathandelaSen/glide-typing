@@ -13,6 +13,24 @@ enum DictationLanguage: String, CaseIterable {
     }
 }
 
+/// One optional per-action global shortcut, keyed by `NumaActionID.rawValue`
+/// in `Settings.actionShortcuts`. Defined here so the settings component
+/// stays self-contained for the shell contract harnesses.
+struct ActionShortcut: Codable, Equatable {
+    let keyCode: UInt32
+    let modifiers: UInt32
+}
+
+/// Rejects a shortcut that another Numa action already uses.
+enum ShortcutConflicts {
+    static func conflict(keyCode: UInt32, modifiers: UInt32,
+                         among existing: [(name: String, keyCode: UInt32, modifiers: UInt32)])
+        -> String?
+    {
+        existing.first { $0.keyCode == keyCode && $0.modifiers == modifiers }?.name
+    }
+}
+
 enum Settings {
     private static let defaults = UserDefaults.standard
 
@@ -232,6 +250,45 @@ enum Settings {
             return v == 0 ? 1.0 : min(max(v, 0.3), 1.0)
         }
         set { defaults.set(newValue, forKey: "opacity") }
+    }
+
+    /// Double-Option launcher for the command palette.
+    static var doubleOptionPaletteEnabled: Bool {
+        get { defaults.object(forKey: "doubleOptionPaletteEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "doubleOptionPaletteEnabled") }
+    }
+
+    /// Seconds allowed between the two Option releases. A configurable
+    /// constant without UI for now.
+    static var doubleOptionWindowSeconds: Double {
+        get {
+            guard let value = defaults.object(forKey: "doubleOptionWindowSeconds")
+                    as? Double else { return 0.4 }
+            return min(0.8, max(0.2, value))
+        }
+        set { defaults.set(min(0.8, max(0.2, newValue)),
+                           forKey: "doubleOptionWindowSeconds") }
+    }
+
+    /// Optional per-action global shortcuts, keyed by `NumaActionID.rawValue`.
+    /// Every action starts unset; only user-configured entries are stored.
+    static var actionShortcuts: [String: ActionShortcut] {
+        get {
+            guard let data = defaults.data(forKey: "actionShortcuts"),
+                  let decoded = try? JSONDecoder().decode([String: ActionShortcut].self,
+                                                          from: data) else { return [:] }
+            return decoded
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            defaults.set(data, forKey: "actionShortcuts")
+        }
+    }
+
+    /// Action IDs recently executed from the palette, most recent first.
+    static var paletteRecents: [String] {
+        get { defaults.stringArray(forKey: "paletteRecents") ?? [] }
+        set { defaults.set(Array(newValue.prefix(8)), forKey: "paletteRecents") }
     }
 }
 

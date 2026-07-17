@@ -23,7 +23,7 @@ do {
 SWIFT
 
 swiftc \
-    "$repo_root/Sources/GlideBoard/MicrophoneAvailability.swift" \
+    "$repo_root/Sources/GlideBoardCore/MicrophoneAvailability.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/microphone-availability"
 

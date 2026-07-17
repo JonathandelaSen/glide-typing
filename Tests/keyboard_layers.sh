@@ -193,15 +193,21 @@ SWIFT
 
 swiftc \
     -parse-as-library \
-    "$repo_root/Sources/GlideBoard/KeyboardLayout.swift" \
-    "$repo_root/Sources/GlideBoard/EmojiCatalog.swift" \
-    "$repo_root/Sources/GlideBoard/KeyboardView.swift" \
-    "$repo_root/Sources/GlideBoard/ComposerTextView.swift" \
-    "$repo_root/Sources/GlideBoard/GestureDecoder.swift" \
-    "$repo_root/Sources/GlideBoard/GestureRanking.swift" \
-    "$repo_root/Sources/GlideBoard/Lexicon.swift" \
-    "$repo_root/Sources/GlideBoard/DictationController.swift" \
-    "$repo_root/Sources/GlideBoard/DictationButtonHitTesting.swift" \
+    "$repo_root/Sources/GlideBoardCore/KeyboardLayout.swift" \
+    "$repo_root/Sources/GlideBoardCore/EmojiCatalog.swift" \
+    "$repo_root/Sources/GlideBoardCore/KeyboardView.swift" \
+    "$repo_root/Sources/GlideBoardCore/ComposerTextView.swift" \
+    "$repo_root/Sources/GlideBoardCore/GestureDecoder.swift" \
+    "$repo_root/Sources/GlideBoardCore/GestureRanking.swift" \
+    "$repo_root/Sources/GlideBoardCore/Lexicon.swift" \
+    "$repo_root/Sources/GlideBoardCore/DictationController.swift" \
+    "$repo_root/Sources/GlideBoardCore/NumaAudioPipeline.swift" \
+    "$repo_root/Sources/GlideBoardCore/NumaAudioExecutor.swift" \
+    "$repo_root/Sources/GlideBoardCore/DictationTranscribing.swift" \
+    "$repo_root/Sources/GlideBoardCore/DictationButtonHitTesting.swift" \
+    "$repo_root/Sources/GlideBoardCore/AudioRingBuffer.swift" \
+    "$repo_root/Sources/GlideBoardCore/AdaptiveVoiceGate.swift" \
+    "$repo_root/Sources/GlideBoardCore/AudioFrame.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/keyboard-layers"
 

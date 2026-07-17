@@ -42,7 +42,7 @@ precondition(!panel.isVisible, "The panel must release key focus before it is sh
 SWIFT
 
 swiftc \
-    "$repo_root/Sources/GlideBoard/ComposerFocus.swift" \
+    "$repo_root/Sources/GlideBoardCore/ComposerFocus.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/composer-focus-command"
 

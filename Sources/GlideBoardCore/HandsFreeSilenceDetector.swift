@@ -14,12 +14,15 @@ struct HandsFreeSilenceDetector: Sendable {
     /// Default trailing silence; the user-facing setting overrides it so
     /// thinking pauses don't cut the dictation.
     static let defaultTrailingSilenceSamples = 56_000
-
     let trailingSilenceSamples: Int
 
     private var hasVoice = false
     private var initialSamples = 0
     private var trailingSamples = 0
+
+    /// Whether voice was heard at all — the caller's AdaptiveVoiceGate needs
+    /// it to pick the hysteresis threshold.
+    var voiceStarted: Bool { hasVoice }
 
     init(trailingSilenceSamples: Int = HandsFreeSilenceDetector.defaultTrailingSilenceSamples) {
         self.trailingSilenceSamples = max(8_000, trailingSilenceSamples)

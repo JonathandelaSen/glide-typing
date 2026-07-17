@@ -78,10 +78,13 @@ if let original {
 SWIFT
 
 swiftc \
-    "$repo_root/Sources/GlideBoard/KeyboardLayout.swift" \
-    "$repo_root/Sources/GlideBoard/Settings.swift" \
-    "$repo_root/Sources/GlideBoard/TransformAction.swift" \
-    "$repo_root/Sources/GlideBoard/ClipboardSnapshot.swift" \
+    "$repo_root/Sources/GlideBoardCore/KeyboardLayout.swift" \
+    "$repo_root/Sources/GlideBoardCore/EmojiCatalog.swift" \
+    "$repo_root/Sources/GlideBoardCore/Settings.swift" \
+    "$repo_root/Sources/GlideBoardCore/VoiceCommands.swift" \
+    "$repo_root/Sources/GlideBoardCore/NumaSoundPlayer.swift" \
+    "$repo_root/Sources/GlideBoardCore/TransformAction.swift" \
+    "$repo_root/Sources/GlideBoardCore/ClipboardSnapshot.swift" \
     "$work_dir/main.swift" \
     -o "$work_dir/transform-anywhere"
 

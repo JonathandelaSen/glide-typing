@@ -36,6 +36,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     /// Claims the physical Tab key while a ghost is on screen, so the phrase
     /// suggestion can be accepted word by word without touching the mouse.
     private var tabInterceptor: KeyInterceptor?
+    /// Every surface (palette, status menu, global shortcuts) runs actions
+    /// through this catalog; no surface calls the features directly.
+    private var actionCatalog: NumaActionCatalog!
+    private var commandPalette: CommandPaletteController?
+    private var doubleOptionMonitor: DoubleOptionMonitor?
+    /// Optional per-action hotkeys (Settings.actionShortcuts), rebuilt on change.
+    private var actionHotKeys: [String: HotKey] = [:]
+    private var paletteMenuItem: NSMenuItem?
     private var settingsController: SettingsWindowController?
     private var lifecycleMonitor: WorkspaceLifecycleMonitor?
     private let launchAtLoginController = LaunchAtLoginController()
@@ -142,6 +150,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             }
         }
 
+        buildActionCatalog()
         buildPanel()
         buildStatusItem()
         // Created eagerly so every sent text is recorded (and persisted) even
@@ -183,6 +192,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         configureDictation()
         applyDictationHotKey()
         applyHandsFreeHotKey()
+        applyActionShortcuts()
+        ensureDoubleOptionMonitor()
         lifecycleMonitor = WorkspaceLifecycleMonitor { [weak self] suspended in
             self?.numaCoordinator?.setSuspended(suspended)
         }
@@ -200,9 +211,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
 
     /// Keep `keyboardView.hasTextTarget` in sync with the focused field so the
     /// composer chip shows "copy" when there's nowhere to inject text.
+    /// Also retries the event taps that need the Accessibility permission.
     private func startTargetPolling() {
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refreshTargetStatus() }
+            Task { @MainActor [weak self] in
+                self?.ensureDoubleOptionMonitor()
+                self?.refreshTargetStatus()
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         targetPollTimer = t
@@ -224,12 +239,140 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         }
     }
 
+    // MARK: - Action catalog
+
+    private func buildActionCatalog() {
+        actionCatalog = NumaActionCatalog(
+            executor: self,
+            availability: { [weak self] id in
+                self?.actionAvailability(id) ?? .available
+            },
+            shortcut: { [weak self] id in self?.configuredShortcut(for: id) },
+            voicePhrase: { id in
+                guard id == .toggleHandsFreeDictation else { return nil }
+                return Settings.voiceCommands.first { $0.action == .record }?.phrase
+            })
+    }
+
+    private func actionAvailability(_ id: NumaActionID) -> NumaActionAvailability {
+        switch id {
+        case .toggleHandsFreeDictation:
+            // Same states in which today's surfaces are no-ops (the menu item
+            // is disabled while transcribing); everything else stays exactly
+            // as before, including the graceful in-action feedback paths.
+            switch numaCoordinator?.state {
+            case .preparing(.pushToTalk), .recording(.pushToTalk):
+                return .unavailable("Push-to-talk is using the microphone")
+            case .transcribing, .delivering:
+                return .unavailable("Still transcribing the previous dictation")
+            default:
+                return .available
+            }
+        default:
+            return .available
+        }
+    }
+
+    private func configuredShortcut(for id: NumaActionID)
+        -> (keyCode: UInt32, modifiers: UInt32)?
+    {
+        switch id {
+        case .toggleBoard:
+            (Settings.hotKeyCode, Settings.hotKeyModifiers)
+        case .focusComposer:
+            (Settings.focusHotKeyCode, Settings.focusHotKeyModifiers)
+        case .sendDraft:
+            (Settings.sendHotKeyCode, Settings.sendHotKeyModifiers)
+        case .pushToTalk:
+            (Settings.dictationHotKeyCode, Settings.dictationHotKeyModifiers)
+        case .toggleHandsFreeDictation:
+            (Settings.handsFreeDictationHotKeyCode,
+             Settings.handsFreeDictationHotKeyModifiers)
+        case .transformText:
+            (Settings.transformHotKeyCode, Settings.transformHotKeyModifiers)
+        case .toggleAttention, .openSettings, .togglePalette:
+            Settings.actionShortcuts[id.rawValue]
+                .map { ($0.keyCode, $0.modifiers) }
+        }
+    }
+
+    private func runAction(_ id: NumaActionID, from invocation: NumaActionInvocation) {
+        presentActionOutcome(actionCatalog.execute(id, from: invocation))
+    }
+
+    private func presentActionOutcome(_ outcome: NumaActionOutcome) {
+        switch outcome {
+        case .completed, .openedSurface:
+            break
+        case .unavailable(let message), .failed(let message),
+             .requiresConfirmation(let message):
+            if panel.isVisible {
+                keyboardView.flash(message)
+            } else {
+                NSSound.beep()
+            }
+            NSLog("Numa action: %@", message)
+        }
+    }
+
+    private func togglePaletteSurface() {
+        if commandPalette == nil {
+            commandPalette = CommandPaletteController(
+                catalog: actionCatalog,
+                context: { [weak self] in self?.lastExternalApp?.localizedName },
+                screen: { [weak self] in
+                    ActiveScreenResolver.resolve(lastExternalApp: self?.lastExternalApp)
+                })
+        }
+        commandPalette?.toggle()
+    }
+
+    /// Like the Tab interceptor, the tap can't be created until Accessibility
+    /// is granted; retried from the polling timer.
+    private func ensureDoubleOptionMonitor() {
+        guard doubleOptionMonitor == nil else { return }
+        doubleOptionMonitor = DoubleOptionMonitor(
+            window: Settings.doubleOptionWindowSeconds,
+            isEnabled: { Settings.doubleOptionPaletteEnabled },
+            onTrigger: { [weak self] in
+                self?.runAction(.togglePalette, from: .doubleOption)
+            })
+    }
+
+    /// Registers only the shortcuts the user configured; every new catalog
+    /// action starts unset.
+    private func applyActionShortcuts() {
+        actionHotKeys.removeAll()
+        var hotKeyID: UInt32 = 100
+        for (raw, shortcut) in Settings.actionShortcuts.sorted(by: { $0.key < $1.key }) {
+            guard let id = NumaActionID(rawValue: raw) else { continue }
+            actionHotKeys[raw] = HotKey(id: hotKeyID, keyCode: shortcut.keyCode,
+                                        modifiers: shortcut.modifiers) { [weak self] in
+                self?.runAction(id, from: .hotKey)
+            }
+            if actionHotKeys[raw] == nil {
+                NSLog("Numa: could not register the %@ shortcut — it may be taken", raw)
+            }
+            hotKeyID += 1
+        }
+        applyShortcutDisplay(paletteMenuItem, for: .togglePalette)
+    }
+
+    private func applyShortcutDisplay(_ item: NSMenuItem?, for id: NumaActionID) {
+        if let shortcut = configuredShortcut(for: id) {
+            applyShortcutDisplay(item, keyCode: shortcut.keyCode,
+                                 modifiers: shortcut.modifiers)
+        } else {
+            item?.keyEquivalent = ""
+        }
+    }
+
     private func applyHotKey() {
         hotKey = nil // unregister the previous one first
         hotKey = HotKey(id: 1,
                         keyCode: Settings.hotKeyCode,
                         modifiers: Settings.hotKeyModifiers) { [weak self] in
-            self?.togglePanel()
+            self?.runAction(.toggleBoard, from: .hotKey)
         }
         applyShortcutDisplay(toggleMenuItem, keyCode: Settings.hotKeyCode,
                              modifiers: Settings.hotKeyModifiers)
@@ -243,7 +386,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         focusHotKey = HotKey(id: 2,
                              keyCode: Settings.focusHotKeyCode,
                              modifiers: Settings.focusHotKeyModifiers) { [weak self] in
-            self?.focusComposerInput()
+            self?.runAction(.focusComposer, from: .hotKey)
         }
         applyShortcutDisplay(focusMenuItem, keyCode: Settings.focusHotKeyCode,
                              modifiers: Settings.focusHotKeyModifiers)
@@ -257,7 +400,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         transformHotKey = HotKey(id: 3,
                                  keyCode: Settings.transformHotKeyCode,
                                  modifiers: Settings.transformHotKeyModifiers) { [weak self] in
-            self?.transformer?.begin()
+            self?.runAction(.transformText, from: .hotKey)
         }
         applyShortcutDisplay(transformMenuItem, keyCode: Settings.transformHotKeyCode,
                              modifiers: Settings.transformHotKeyModifiers)
@@ -271,7 +414,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         sendHotKey = HotKey(id: 5,
                             keyCode: Settings.sendHotKeyCode,
                             modifiers: Settings.sendHotKeyModifiers) { [weak self] in
-            self?.sendComposerFromHotKey()
+            self?.runAction(.sendDraft, from: .hotKey)
         }
         applyShortcutDisplay(sendMenuItem, keyCode: Settings.sendHotKeyCode,
                              modifiers: Settings.sendHotKeyModifiers)
@@ -305,10 +448,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             keyCode: Settings.dictationHotKeyCode,
             modifiers: Settings.dictationHotKeyModifiers,
             pressed: { [weak self] in
-                self?.numaCoordinator?.pressPushToTalk()
+                self?.actionCatalog.pressPushToTalk()
             },
             released: { [weak self] in
-                self?.numaCoordinator?.releasePushToTalk()
+                self?.actionCatalog.releasePushToTalk()
             }
         )
         refreshDictationMenuTitle()
@@ -324,7 +467,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             keyCode: Settings.handsFreeDictationHotKeyCode,
             modifiers: Settings.handsFreeDictationHotKeyModifiers
         ) { [weak self] in
-            self?.numaCoordinator?.toggleHandsFree(source: .handsFreeHotKey)
+            self?.runAction(.toggleHandsFreeDictation, from: .hotKey)
         }
         if handsFreeHotKey == nil {
             NSLog("Numa: no se pudo registrar ⌥L; puede estar ocupado")
@@ -1335,6 +1478,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
 
         // Primary actions. Their global hotkeys render right-aligned like
         // native key equivalents (see applyShortcutDisplay).
+        let palette = NSMenuItem(title: "Command Palette…",
+                                 action: #selector(menuTogglePalette), keyEquivalent: "")
+        palette.target = self
+        menu.addItem(palette)
+        paletteMenuItem = palette
+        applyShortcutDisplay(palette, for: .togglePalette)
+
         let toggle = NSMenuItem(title: "Mostrar u ocultar el teclado",
                                 action: #selector(menuToggle), keyEquivalent: "")
         toggle.target = self
@@ -1442,13 +1592,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         englishMenuItem?.state = lang == .english ? .on : .off
     }
 
-    @objc private func menuToggle() { togglePanel() }
+    @objc private func menuToggle() { runAction(.toggleBoard, from: .statusMenu) }
+    @objc private func menuTogglePalette() { runAction(.togglePalette, from: .statusMenu) }
     @objc private func menuToggleAttention() {
-        if numaCoordinator?.state == .pausedByUser {
-            numaCoordinator?.resume()
-        } else {
-            numaCoordinator?.pause()
-        }
+        runAction(.toggleAttention, from: .statusMenu)
     }
     @objc private func menuOpenLoginSettings() {
         if launchAtLoginState == .notRegistered {
@@ -1459,15 +1606,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             launchAtLoginController.openSystemSettings()
         }
     }
-    @objc private func menuFocusComposer() { focusComposerInput() }
-    @objc private func menuTransform() { transformer?.begin() }
-    @objc private func menuSendComposer() { sendComposerFromHotKey() }
+    @objc private func menuFocusComposer() { runAction(.focusComposer, from: .statusMenu) }
+    @objc private func menuTransform() { runAction(.transformText, from: .statusMenu) }
+    @objc private func menuSendComposer() { runAction(.sendDraft, from: .statusMenu) }
     @objc private func menuDictation() {
-        numaCoordinator?.toggleHandsFree(source: .menu)
-    }
-
-    private func toggleDictationFromButton() {
-        numaCoordinator?.toggleHandsFree(source: .button)
+        runAction(.toggleHandsFreeDictation, from: .statusMenu)
     }
     @objc private func setSpanish() { switchLanguage(.spanish) }
     @objc private func setEnglish() { switchLanguage(.english) }
@@ -1529,6 +1672,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
             controller.onHandsFreeHotKeyChange = { [weak self] _, _ in self?.applyHandsFreeHotKey() }
             controller.onTransformHotKeyChange = { [weak self] _, _ in self?.applyTransformHotKey() }
             controller.onSendHotKeyChange = { [weak self] _, _ in self?.applySendHotKey() }
+            controller.onActionShortcutsChange = { [weak self] in self?.applyActionShortcuts() }
             controller.onDictationModelChange = { [weak self] in self?.configureDictation() }
             controller.onAttentionModelChange = { [weak self] in self?.configureDictation() }
             // The phrases live inside the recognizer's prompt, so changing a
@@ -1591,7 +1735,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     }
 
     func keyboardViewDidToggleDictation(_ view: KeyboardView) {
-        toggleDictationFromButton()
+        runAction(.toggleHandsFreeDictation, from: .boardButton)
     }
 
     func keyboardViewDidRequestClose(_ view: KeyboardView) {
@@ -2108,4 +2252,62 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         refreshPredictions()
         requestCompletion()
     }
+}
+
+// MARK: - NumaActionExecuting
+
+extension AppDelegate: NumaActionExecuting {
+    func performAction(_ id: NumaActionID,
+                       from invocation: NumaActionInvocation) -> NumaActionOutcome
+    {
+        switch id {
+        case .toggleBoard:
+            // From the palette, showing the Board must leave the composer
+            // focused and ready to type; other surfaces keep the plain toggle.
+            if invocation == .palette, !panel.isVisible {
+                focusComposerInput()
+                return .openedSurface
+            }
+            togglePanel()
+            return panel.isVisible ? .openedSurface : .completed
+        case .focusComposer:
+            focusComposerInput()
+            return .openedSurface
+        case .sendDraft:
+            sendComposerFromHotKey()
+            return .completed
+        case .toggleHandsFreeDictation:
+            let source: DictationStartSource = switch invocation {
+            case .statusMenu: .menu
+            case .boardButton: .button
+            case .palette: .palette
+            case .hotKey, .doubleOption: .handsFreeHotKey
+            }
+            numaCoordinator?.toggleHandsFree(source: source)
+            return .completed
+        case .pushToTalk:
+            // Unreachable through `execute` (press/release policy); kept
+            // explicit for any future direct caller.
+            return .unavailable("Runs by holding its shortcut, not from here")
+        case .transformText:
+            transformer?.begin()
+            return .completed
+        case .toggleAttention:
+            if numaCoordinator?.state == .pausedByUser {
+                numaCoordinator?.resume()
+            } else {
+                numaCoordinator?.pause()
+            }
+            return .completed
+        case .openSettings:
+            openSettings()
+            return .openedSurface
+        case .togglePalette:
+            togglePaletteSurface()
+            return commandPalette?.isVisible == true ? .openedSurface : .completed
+        }
+    }
+
+    func pressPushToTalk() { numaCoordinator?.pressPushToTalk() }
+    func releasePushToTalk() { numaCoordinator?.releasePushToTalk() }
 }
