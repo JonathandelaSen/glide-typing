@@ -37,6 +37,7 @@ struct GlideBoardChecksMain {
         await swipeGestureChecks()
         await doubleOptionChecks()
         await actionCatalogChecks()
+        await workspaceProfileChecks()
 
         Checks.shared.finish()
     }

@@ -41,6 +41,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
     private var actionCatalog: NumaActionCatalog!
     private var commandPalette: CommandPaletteController?
     private var doubleOptionMonitor: DoubleOptionMonitor?
+    private lazy var workspaceProfiles = WorkspaceProfilesController()
     /// Optional per-action hotkeys (Settings.actionShortcuts), rebuilt on change.
     private var actionHotKeys: [String: HotKey] = [:]
     private var paletteMenuItem: NSMenuItem?
@@ -1540,6 +1541,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
         reflectLanguageInMenu(Settings.language)
+
+        menu.addItem(.separator())
+        menu.addItem(workspaceProfiles.menuItem())
 
         menu.addItem(.separator())
 

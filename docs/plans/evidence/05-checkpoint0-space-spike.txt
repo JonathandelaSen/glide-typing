@@ -1,0 +1,51 @@
+== symbol probe (SkyLight loaded: 2 handles)
+   FOUND   CGSMainConnectionID
+   FOUND   CGSCopySpaces
+   FOUND   CGSGetWindowWorkspace
+   FOUND   CGSMoveWindowsToManagedSpace
+   FOUND   CGSManagedDisplayGetCurrentSpace
+   FOUND   CGSCopyManagedDisplaySpaces
+   FOUND   CGSCopySpacesForWindows
+   FOUND   CGSManagedDisplaySetCurrentSpace
+   FOUND   CGSAddWindowsToSpaces
+   FOUND   CGSRemoveWindowsFromSpaces
+   FOUND   _AXUIElementGetWindow
+   bogus symbol resolves nil: yes (capability would disable cleanly)
+
+== connection: 675043
+main display id=3 uuid=658711CF-FA1D-43DD-B697-0E002B3CBB83
+screensHaveSeparateSpaces=false
+
+== CGSCopyManagedDisplaySpaces: 1 display(s)
+   display 658711CF-FA1D-43DD-B697-0E002B3CBB83 currentSpace=3
+      [0] id64=5 type=0 uuid=34105A90-5F27-405F-B84B-A1119FA1BA99
+      [1] id64=7 type=0 uuid=44242629-E27B-4D7F-A141-65231F4DAB9A
+      [2] id64=3 type=0 uuid=BF88A130-7252-4F2B-863A-A84B0A410795
+      [3] id64=4 type=0 uuid=3F82B205-D073-4445-8E78-88CA4810FA1F
+      [4] id64=6 type=0 uuid=1CC3C47D-B43A-40B8-A891-2AF2B524C139
+      [5] id64=8 type=0 uuid=F755576C-12E1-42BB-9977-888CF26F1FD6
+      [6] id64=1 type=0 uuid=
+      [7] id64=9 type=0 uuid=09BD760A-171F-40B4-AEC4-D07E72C74848
+      [8] id64=10 type=0 uuid=2891BEEB-D960-45C3-9373-1C2F7117EF35
+      [9] id64=11 type=0 uuid=D8D6AAC2-36EB-4569-9803-633A84A5C617
+
+== CGSCopySpaces(mask 7): [11, 10, 9, 8, 7, 6, 5, 4, 3, 1]
+
+== CGSManagedDisplayGetCurrentSpace: 3
+
+== disposable panel: CGWindowID=3499
+   CGSCopySpacesForWindows: [3]
+   CGSGetWindowWorkspace: Optional(0)
+
+== moving window 3499: space 3 -> 5
+   after move: [5]  (moved: YES)
+   after return: [3]  (returned: YES)
+
+== AX mapping (AXIsProcessTrusted=true)
+   AX windows enumeration err=-25208 (panel may be skipped by AX)
+
+== CGSManagedDisplaySetCurrentSpace probe: 3 -> 5
+   after set: current=5 (switched: YES)
+   after return: current=3 (returned: YES)
+
+RESULT: spike complete
