@@ -40,18 +40,19 @@ func actionCatalogChecks() async {
         try expectEqual(NumaActionID.pushToTalk.rawValue, "dictation.pushtotalk")
         try expectEqual(NumaActionID.transformText.rawValue, "text.transform")
         try expectEqual(NumaActionID.toggleAttention.rawValue, "numa.attention.toggle")
+        try expectEqual(NumaActionID.manageWorkspaceProfiles.rawValue,
+                        "workspace.profiles.manage")
         try expectEqual(NumaActionID.openSettings.rawValue, "app.settings.open")
         try expectEqual(NumaActionID.togglePalette.rawValue, "palette.toggle")
     }
 
     await Checks.shared.test("the palette shows only the curated actions") {
-        // Curated 2026-07-16: the palette surfaces these four; every other
-        // action keeps its menu/hotkey surface through the catalog.
         let visible = NumaActionCatalog.defaultDescriptors()
             .filter(\.showsInPalette)
             .map(\.id)
         try expectEqual(visible, [.toggleBoard, .toggleHandsFreeDictation,
-                                  .toggleAttention, .openSettings])
+                                  .toggleAttention, .manageWorkspaceProfiles,
+                                  .openSettings])
     }
 
     await Checks.shared.test("execute routes through the executor with its surface") {
@@ -175,6 +176,10 @@ func actionCatalogChecks() async {
                                               recents: [])
         try expectTrue(byKeyword.contains { $0.descriptor.id == .toggleHandsFreeDictation })
         try expectFalse(byKeyword.contains { $0.descriptor.id == .openSettings })
+        let workspace = PaletteSearch.results(query: "workspace profiles", entries: all,
+                                              recents: [])
+        try expectEqual(try unwrap(workspace.first).descriptor.id,
+                        .manageWorkspaceProfiles)
     }
 
     await Checks.shared.test("matching is diacritic- and case-insensitive") {

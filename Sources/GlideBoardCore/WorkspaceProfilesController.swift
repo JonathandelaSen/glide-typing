@@ -23,6 +23,7 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
     private var rulesTable: NSTableView?
     private var detailLabel: NSTextField?
     private var diagnosticsLabel: NSTextField?
+    private var applyButton: NSButton?
 
     init(spaceManager: SpaceManaging = CGSSpaceManager(),
          store: WorkspaceProfileStore = WorkspaceProfileStore()) {
@@ -157,11 +158,12 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
             WorkspaceLog.write("apply ignored: another operation is running")
             return
         }
-        busy = true
+        setBusy(true)
         Task { [weak self] in
             guard let self else { return }
             let report = await self.executor.apply(profile, limitToRuleIDs: limitTo)
-            self.busy = false
+            self.setBusy(false)
+            self.refreshManageWindow()
             WorkspaceLog.write("report shown: \(report.headline)")
             self.presentReport(report, mergingIntoPrevious: limitTo != nil)
         }
@@ -206,16 +208,16 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
         }
         WorkspaceLog.write("capture click"
             + (existing.map { " (updating \"\($0.name)\")" } ?? ""))
-        busy = true
+        setBusy(true)
         Task { [weak self] in
             guard let self else { return }
             do {
                 let name = existing?.name ?? "Profile \(self.store.profiles.count + 1)"
                 let result = try await self.captureService.captureMainDisplay(named: name)
-                self.busy = false
+                self.setBusy(false)
                 self.presentCapturePreview(result, updating: existing)
             } catch {
-                self.busy = false
+                self.setBusy(false)
                 WorkspaceLog.write("capture failed: \(error)")
                 self.presentError(title: "Capture failed",
                                   message: String(describing: error))
@@ -280,11 +282,11 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
     @objc private func undoLastApply() {
         guard !busy else { return }
         WorkspaceLog.write("undo click")
-        busy = true
+        setBusy(true)
         Task { [weak self] in
             guard let self else { return }
             let lines = await self.executor.undoLastApply()
-            self.busy = false
+            self.setBusy(false)
             self.presentInfo(title: "Undo Last Apply",
                              message: lines.joined(separator: "\n"))
         }
@@ -293,6 +295,10 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
     // MARK: - Manage window
 
     @objc private func manageProfiles() {
+        showManager()
+    }
+
+    func showManager() {
         if manageWindow == nil {
             buildManageWindow()
         }
@@ -326,6 +332,8 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
             control.controlSize = .small
             return control
         }
+        let apply = button("Apply Profile", #selector(applySelectedProfile))
+        applyButton = apply
         let profileButtons = NSStackView(views: [
             button("Rename…", #selector(renameSelectedProfile)),
             button("Update from Current Layout…", #selector(updateSelectedProfile)),
@@ -340,7 +348,7 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
 
         let right = NSStackView(views: [
             detail, wrapInScroll(rulesTable, height: 180), ruleButtons,
-            profileButtons, diagnostics,
+            apply, profileButtons, diagnostics,
         ])
         right.orientation = .vertical
         right.alignment = .leading
@@ -440,6 +448,7 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
                 ? "No saved profiles. Use “Save Current Layout…” in the status menu."
                 : "Select a profile"
             diagnosticsLabel?.stringValue = diagnostics.joined(separator: "\n")
+            refreshApplyButton(for: nil)
             return
         }
         let formatter = DateFormatter()
@@ -460,6 +469,37 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
         }
         detailLabel?.stringValue = lines.joined(separator: "\n")
         diagnosticsLabel?.stringValue = diagnostics.joined(separator: "\n")
+        refreshApplyButton(for: profile)
+    }
+
+    private func refreshApplyButton(for profile: WorkspaceProfile?) {
+        let reason = applyBlockReason(for: profile)
+        applyButton?.isEnabled = reason == nil
+        applyButton?.toolTip = reason
+    }
+
+    private func setBusy(_ value: Bool) {
+        busy = value
+        refreshApplyButton(for: selectedProfile)
+    }
+
+    private func applyBlockReason(for profile: WorkspaceProfile?) -> String? {
+        if busy { return "Another workspace operation is running" }
+        guard let profile else { return "Select a profile to apply" }
+        if case .unavailable(let reason) = spaceManager.capability { return reason }
+        let current = DisplayConfigurationResolver.currentSignature(
+            spaceManager: spaceManager)
+        let mismatches = DisplayConfigurationResolver.mismatchReasons(
+            saved: profile.display, current: current)
+        return mismatches.isEmpty ? nil : mismatches.joined(separator: "\n")
+    }
+
+    @objc private func applySelectedProfile() {
+        guard let profile = selectedProfile,
+              applyBlockReason(for: profile) == nil else { return }
+        WorkspaceLog.write("apply click from manager: \"\(profile.name)\"")
+        lastAppliedProfile = profile
+        runApply(profile: profile, limitTo: nil)
     }
 
     @objc private func renameSelectedProfile() {

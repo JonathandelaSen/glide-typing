@@ -291,7 +291,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, KeyboardViewDel
              Settings.handsFreeDictationHotKeyModifiers)
         case .transformText:
             (Settings.transformHotKeyCode, Settings.transformHotKeyModifiers)
-        case .toggleAttention, .openSettings, .togglePalette:
+        case .toggleAttention, .manageWorkspaceProfiles, .openSettings, .togglePalette:
             Settings.actionShortcuts[id.rawValue]
                 .map { ($0.keyCode, $0.modifiers) }
         }
@@ -2303,6 +2303,9 @@ extension AppDelegate: NumaActionExecuting {
                 numaCoordinator?.pause()
             }
             return .completed
+        case .manageWorkspaceProfiles:
+            workspaceProfiles.showManager()
+            return .openedSurface
         case .openSettings:
             openSettings()
             return .openedSurface

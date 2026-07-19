@@ -10,6 +10,7 @@ enum NumaActionID: String, CaseIterable, Sendable {
     case pushToTalk = "dictation.pushtotalk"
     case transformText = "text.transform"
     case toggleAttention = "numa.attention.toggle"
+    case manageWorkspaceProfiles = "workspace.profiles.manage"
     case openSettings = "app.settings.open"
     case togglePalette = "palette.toggle"
 }
@@ -232,6 +233,16 @@ final class NumaActionCatalog {
                 keywords: ["attention", "pause", "resume", "listen", "voice"],
                 symbolName: "ear",
                 category: .attention,
+                policy: .invoke,
+                showsInPalette: true),
+            NumaActionDescriptor(
+                id: .manageWorkspaceProfiles,
+                title: "Manage Workspace Profiles",
+                subtitle: "Inspect, update or apply saved workspace layouts",
+                aliases: ["workspace profiles", "profiles", "desktops", "layouts"],
+                keywords: ["workspace", "profile", "spaces", "desktop", "layout", "apply"],
+                symbolName: "rectangle.3.group",
+                category: .system,
                 policy: .invoke,
                 showsInPalette: true),
             NumaActionDescriptor(

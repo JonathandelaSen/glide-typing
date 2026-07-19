@@ -64,6 +64,11 @@ done
 
 grep -q "workspaceProfiles.menuItem()" "$core/AppDelegate.swift" \
   || fail "the status menu must route through WorkspaceProfilesController"
+grep -q "workspaceProfiles.showManager()" "$core/AppDelegate.swift" \
+  || fail "the action catalog must open the workspace profile manager"
+grep -q 'button("Apply Profile", #selector(applySelectedProfile))' \
+  "$core/WorkspaceProfilesController.swift" \
+  || fail "the profile manager must expose the existing apply pipeline"
 
 grep -q 'appendingPathComponent("GlideBoard"' "$core/WorkspaceProfileStore.swift" \
   || fail "profiles must persist under the GlideBoard support directory"
