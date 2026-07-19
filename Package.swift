@@ -39,6 +39,14 @@ let package = Package(
             name: "NumaAttentionLab",
             dependencies: ["GlideBoardCore"],
             path: "Tools/NumaAttentionLab"
+        ),
+        // Dev-only workspace lab: drives the real capture/apply/undo pipeline
+        // from the CLI (needs Accessibility trust) so profile behavior can be
+        // verified end-to-end without touching the app UI. Never bundled.
+        .executableTarget(
+            name: "WorkspaceLab",
+            dependencies: ["GlideBoardCore"],
+            path: "Tools/WorkspaceLab"
         )
     ]
 )

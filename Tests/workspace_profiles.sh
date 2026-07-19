@@ -32,7 +32,8 @@ grep -q "case .unavailable" "$core/WorkspaceProfilesController.swift" \
 services=(WorkspaceProfileExecutor WorkspaceCaptureService WorkspacePlanBuilder
           WorkspaceProfileStore WorkspaceApplicationLauncher WorkspaceWindowCatalog
           WorkspaceWindowRecipeRegistry CGSSpaceManager WorkspaceProfileModel
-          SpaceManaging DisplayConfigurationResolver WorkspaceUndoStore)
+          SpaceManaging DisplayConfigurationResolver WorkspaceUndoStore
+          WorkspaceWindowMover)
 for service in "${services[@]}"; do
   if grep -q "NSMenu\|NSAlert" "$core/$service.swift"; then
     fail "$service must stay UI-free (NSMenu/NSAlert belong to the controller)"

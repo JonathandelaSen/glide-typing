@@ -14,8 +14,6 @@ final class CGSSpaceManager: SpaceManaging {
         @convention(c) (ConnectionID) -> Unmanaged<CFArray>?
     private typealias GetCurrentSpaceFn =
         @convention(c) (ConnectionID, CFString) -> UInt64
-    private typealias SetCurrentSpaceFn =
-        @convention(c) (ConnectionID, CFString, UInt64) -> Void
     private typealias MoveWindowsFn =
         @convention(c) (ConnectionID, CFArray, UInt64) -> Void
     private typealias CopySpacesForWindowsFn =
@@ -25,7 +23,6 @@ final class CGSSpaceManager: SpaceManaging {
     private let connection: ConnectionID
     private let copyManagedDisplaySpaces: CopyManagedDisplaySpacesFn?
     private let getCurrentSpace: GetCurrentSpaceFn?
-    private let setCurrentSpace: SetCurrentSpaceFn?
     private let moveWindowsFn: MoveWindowsFn?
     private let copySpacesForWindows: CopySpacesForWindowsFn?
 
@@ -48,7 +45,6 @@ final class CGSSpaceManager: SpaceManaging {
             "CGSMainConnectionID",
             "CGSCopyManagedDisplaySpaces",
             "CGSManagedDisplayGetCurrentSpace",
-            "CGSManagedDisplaySetCurrentSpace",
             "CGSMoveWindowsToManagedSpace",
             "CGSCopySpacesForWindows",
         ]
@@ -69,8 +65,6 @@ final class CGSSpaceManager: SpaceManaging {
                 symbols["CGSCopyManagedDisplaySpaces"]!, to: CopyManagedDisplaySpacesFn.self)
             getCurrentSpace = unsafeBitCast(
                 symbols["CGSManagedDisplayGetCurrentSpace"]!, to: GetCurrentSpaceFn.self)
-            setCurrentSpace = unsafeBitCast(
-                symbols["CGSManagedDisplaySetCurrentSpace"]!, to: SetCurrentSpaceFn.self)
             moveWindowsFn = unsafeBitCast(
                 symbols["CGSMoveWindowsToManagedSpace"]!, to: MoveWindowsFn.self)
             copySpacesForWindows = unsafeBitCast(
@@ -82,9 +76,14 @@ final class CGSSpaceManager: SpaceManaging {
             connection = 0
             copyManagedDisplaySpaces = nil
             getCurrentSpace = nil
-            setCurrentSpace = nil
             moveWindowsFn = nil
             copySpacesForWindows = nil
+        }
+        switch capability {
+        case .available:
+            WorkspaceLog.write("CGS adapter ready, connection \(connection)")
+        case .unavailable(let reason):
+            WorkspaceLog.write("CGS adapter disabled: \(reason)")
         }
     }
 
@@ -124,12 +123,9 @@ final class CGSSpaceManager: SpaceManaging {
 
     func moveWindows(_ windowIDs: [UInt32], toSpace spaceID: UInt64) {
         guard let moveWindowsFn, !windowIDs.isEmpty else { return }
+        WorkspaceLog.write("CGS move windows \(windowIDs) -> space \(spaceID)")
         let windows = windowIDs.map { NSNumber(value: $0) } as CFArray
         moveWindowsFn(connection, windows, spaceID)
     }
 
-    func switchToSpace(_ spaceID: UInt64, displayUUID: String) {
-        guard let setCurrentSpace else { return }
-        setCurrentSpace(connection, displayUUID as CFString, spaceID)
-    }
 }

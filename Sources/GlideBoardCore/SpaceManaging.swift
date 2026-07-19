@@ -15,5 +15,4 @@ protocol SpaceManaging: AnyObject {
     func currentSpaceID(displayUUID: String) -> UInt64?
     func spaceID(ofWindow windowID: UInt32) -> UInt64?
     func moveWindows(_ windowIDs: [UInt32], toSpace spaceID: UInt64)
-    func switchToSpace(_ spaceID: UInt64, displayUUID: String)
 }

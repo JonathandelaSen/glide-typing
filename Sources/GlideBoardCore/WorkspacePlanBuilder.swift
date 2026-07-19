@@ -133,6 +133,31 @@ enum WorkspacePlanBuilder {
             diagnostics: diagnostics)
     }
 
+    /// Visit order for placement jobs that minimizes Space switches: keep
+    /// consuming jobs whose source is the Space the cursor is on (windows
+    /// without a Space can be handled anywhere); the cursor then follows
+    /// each job's target.
+    static func placementOrder(jobs: [(source: Int?, target: Int)],
+                               startingAt start: Int) -> [Int] {
+        var order: [Int] = []
+        var remaining = Array(jobs.indices)
+        var cursor = start
+        while !remaining.isEmpty {
+            // Frame-only fixes on the current Space go before carries that
+            // leave it, so no Space needs a second visit.
+            let next = remaining.first {
+                jobs[$0].source == cursor && jobs[$0].target == cursor
+            }
+                ?? remaining.first { jobs[$0].source == cursor }
+                ?? remaining.first { jobs[$0].source == nil }
+                ?? remaining[0]
+            order.append(next)
+            remaining.removeAll { $0 == next }
+            cursor = jobs[next].target
+        }
+        return order
+    }
+
     /// Slot assignment cost. Space distance dominates, then geometry, and the
     /// window ID breaks ties deterministically via the stable sort order of
     /// the candidates. Titles are never part of identity.

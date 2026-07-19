@@ -123,6 +123,32 @@ Numa or affect its existing features.
 The private adapter owns no launch, matching, geometry, persistence, or UI
 logic. It implements only the minimal `SpaceManaging` contract.
 
+### Platform reality (verified live, 2026-07-18/19)
+
+Live probing on macOS 26.5.1 corrected the strategy above; evidence in
+`docs/plans/evidence/` and `docs/experiments/space-spike/`:
+
+- Every CGS mutation API is dead for other apps' windows from a normal
+  process: `CGSMoveWindowsToManagedSpace`, `CGSAddWindowsToSpaces`, and the
+  compat-ID shim are silent no-ops (the legacy call returns notImplemented).
+  They still work for a process's own windows, which is why the original
+  spike passed.
+- `CGSManagedDisplaySetCurrentSpace` updates CGS state without switching the
+  visible Space, and `GetCurrentSpace` echoes the lie while idle.
+- Synthetic Ctrl+Arrow events never trigger Mission Control shortcuts; app
+  level synthetic keys and mouse drags do work.
+- Accessibility exposes only the ACTIVE Space's windows per app (plus
+  minimized ones); `CGWindowListCopyWindowInfo(.optionAll)` sees every
+  window, and the adapter's per-window Space query is precise. The
+  on-screen-only list keeps reporting a previous Space's windows for over a
+  second after a switch and must never be used for capture.
+- The private adapter therefore stays read-only (enumeration and queries),
+  and all mutation is done through real user gestures, verified after every
+  step: Space switching clicks the expanded Mission Control Spaces bar
+  (Dock's AX tree exposes live space buttons and their frames), and
+  cross-Space moves drag the real title bar against the screen's boundary
+  pixel until the Space slides. Capture is traversal-free (CG-primary).
+
 ## Profile model
 
 Persist a versioned JSON document under GlideBoard's existing Application

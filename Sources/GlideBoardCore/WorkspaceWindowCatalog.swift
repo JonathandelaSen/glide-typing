@@ -59,15 +59,16 @@ struct WorkspaceAXWindow {
     func subrole() -> String? { copyValue(kAXSubroleAttribute) as? String }
 }
 
-/// Maps running apps, their AX windows, and CG window IDs into one snapshot.
-/// The CG window ID comes from the private `_AXUIElementGetWindow` (resolved
-/// dynamically); without it a window can still be matched through its CG
-/// frame, and if both fail the window is skipped rather than guessed.
+/// CG-primary window snapshot: CGWindowList sees every Space's windows with
+/// their frames, and the adapter answers each window's Space precisely. The
+/// Accessibility API only exposes windows of the ACTIVE Space (verified live
+/// 2026-07-18), so AX merely enriches entries with elements, titles,
+/// subroles, and minimized state when it can see them.
 @MainActor
 final class WorkspaceWindowCatalog {
     struct Entry {
         var live: WorkspaceLiveWindow
-        var window: WorkspaceAXWindow
+        var axWindow: WorkspaceAXWindow?
         var pid: pid_t
         var appName: String
     }
@@ -92,100 +93,139 @@ final class WorkspaceWindowCatalog {
     }
 
     func snapshot(spaceManager: SpaceManaging, displayUUID: String) -> [Entry] {
+        let started = Date()
         var ordinalBySpaceID: [UInt64: Int] = [:]
         for (index, spaceID) in spaceManager.orderedUserSpaceIDs(displayUUID: displayUUID)
             .enumerated() {
             ordinalBySpaceID[spaceID] = index + 1
         }
-
-        let cgBoundsByPID = cgWindowBounds()
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        var entries: [Entry] = []
+
+        struct AXInfo {
+            var window: WorkspaceAXWindow
+            var minimized: Bool
+            var title: String?
+            var subrole: String?
+        }
+        var axByWindowID: [UInt32: AXInfo] = [:]
+        var appByPID: [pid_t: NSRunningApplication] = [:]
+        var appsScanned = 0
+        var axFailures: [String] = []
         for app in NSWorkspace.shared.runningApplications {
             guard app.activationPolicy == .regular,
                   app.processIdentifier != ownPID,
                   let bundleID = app.bundleIdentifier else { continue }
+            appByPID[app.processIdentifier] = app
+            appsScanned += 1
             let axApp = AXUIElementCreateApplication(app.processIdentifier)
             var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString,
-                                                &value) == .success,
-                  let axWindows = value as? [AXUIElement] else { continue }
+            let axError = AXUIElementCopyAttributeValue(
+                axApp, kAXWindowsAttribute as CFString, &value)
+            guard axError == .success, let axWindows = value as? [AXUIElement] else {
+                axFailures.append("\(bundleID)=\(axError.rawValue)")
+                continue
+            }
             for element in axWindows {
                 let window = WorkspaceAXWindow(element: element)
-                guard window.role() == kAXWindowRole else { continue }
-                let subrole = window.subrole()
-                guard subrole == nil || subrole == kAXStandardWindowSubrole else { continue }
-                guard let frame = window.frame(),
-                      frame.width >= 50, frame.height >= 50 else { continue }
-                guard let windowID = windowID(of: element, frame: frame,
-                                              pid: app.processIdentifier,
-                                              cgBoundsByPID: cgBoundsByPID) else { continue }
-                let spaceID = spaceManager.spaceID(ofWindow: windowID)
-                entries.append(Entry(
-                    live: WorkspaceLiveWindow(
-                        cgWindowID: windowID,
-                        bundleID: bundleID,
-                        frame: frame,
-                        spaceID: spaceID,
-                        spaceOrdinal: spaceID.flatMap { ordinalBySpaceID[$0] },
-                        isMinimized: window.isMinimized(),
-                        title: window.title(),
-                        role: kAXWindowRole,
-                        subrole: subrole),
-                    window: window,
-                    pid: app.processIdentifier,
-                    appName: app.localizedName ?? bundleID))
+                guard let windowID = windowID(of: element) else { continue }
+                axByWindowID[windowID] = AXInfo(window: window,
+                                                minimized: window.isMinimized(),
+                                                title: window.title(),
+                                                subrole: window.subrole())
             }
         }
+
+        var entries: [Entry] = []
+        var skippedSpaceless = 0
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return [] }
+        for info in list {
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  let windowID = info[kCGWindowNumber as String] as? UInt32,
+                  let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let app = appByPID[pid],
+                  let bundleID = app.bundleIdentifier,
+                  let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let bounds = CGRect(dictionaryRepresentation:
+                    boundsDict as CFDictionary),
+                  bounds.width >= 50, bounds.height >= 50 else { continue }
+            let ax = axByWindowID[windowID]
+            if let subrole = ax?.subrole, subrole != kAXStandardWindowSubrole { continue }
+            let spaceID = spaceManager.spaceID(ofWindow: windowID)
+            // Spaceless CG windows are junk panels unless AX confirms they
+            // are real minimized windows.
+            if spaceID == nil && ax?.minimized != true {
+                skippedSpaceless += 1
+                continue
+            }
+            entries.append(Entry(
+                live: WorkspaceLiveWindow(
+                    cgWindowID: windowID,
+                    bundleID: bundleID,
+                    frame: (ax?.minimized == true ? ax?.window.frame() : nil) ?? bounds,
+                    spaceID: spaceID,
+                    spaceOrdinal: spaceID.flatMap { ordinalBySpaceID[$0] },
+                    isMinimized: ax?.minimized ?? false,
+                    title: ax?.title,
+                    role: "AXWindow",
+                    subrole: ax?.subrole),
+                axWindow: ax?.window,
+                pid: pid,
+                appName: app.localizedName ?? bundleID))
+        }
+        let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+        var summary = "catalog: \(entries.count) windows from \(appsScanned) apps"
+            + " in \(elapsed)ms, AX enriched \(axByWindowID.count)"
+        if skippedSpaceless > 0 { summary += ", \(skippedSpaceless) spaceless skipped" }
+        if !axFailures.isEmpty {
+            summary += "; AX errors: \(axFailures.joined(separator: " "))"
+        }
+        WorkspaceLog.write(summary)
         return entries
     }
 
-    private func windowID(of element: AXUIElement, frame: CGRect, pid: pid_t,
-                          cgBoundsByPID: [pid_t: [(id: UInt32, bounds: CGRect)]])
-        -> UInt32? {
-        if let axGetWindow {
-            var windowID: UInt32 = 0
-            if axGetWindow(element, &windowID) == .success, windowID != 0 {
-                return windowID
-            }
+    /// Fresh AX lookup for one window. Succeeds only while the window's
+    /// Space is active (or the window is minimized) — the AX visibility rule.
+    func axWindow(for windowID: UInt32, pid: pid_t) -> WorkspaceAXWindow? {
+        let axApp = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString,
+                                            &value) == .success,
+              let axWindows = value as? [AXUIElement] else { return nil }
+        for element in axWindows where self.windowID(of: element) == windowID {
+            return WorkspaceAXWindow(element: element)
         }
-        let candidates = (cgBoundsByPID[pid] ?? []).filter {
-            WorkspaceGeometry.approximatelyEqual($0.bounds, frame, tolerance: 2)
-        }
-        return candidates.count == 1 ? candidates[0].id : nil
+        return nil
     }
 
-    private func cgWindowBounds() -> [pid_t: [(id: UInt32, bounds: CGRect)]] {
+    func cgBounds(of windowID: UInt32) -> CGRect? {
         guard let list = CGWindowListCopyWindowInfo(
             [.optionAll, .excludeDesktopElements], kCGNullWindowID)
-            as? [[String: Any]] else { return [:] }
-        var byPID: [pid_t: [(id: UInt32, bounds: CGRect)]] = [:]
-        for info in list {
-            guard (info[kCGWindowLayer as String] as? Int) == 0,
-                  let pid = info[kCGWindowOwnerPID as String] as? pid_t,
-                  let number = info[kCGWindowNumber as String] as? UInt32,
-                  let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
-                  let bounds = CGRect(dictionaryRepresentation:
-                    boundsDict as CFDictionary) else { continue }
-            byPID[pid, default: []].append((number, bounds))
+            as? [[String: Any]] else { return nil }
+        for info in list where (info[kCGWindowNumber as String] as? UInt32) == windowID {
+            guard let dict = info[kCGWindowBounds as String] as? [String: CGFloat] else {
+                return nil
+            }
+            return CGRect(dictionaryRepresentation: dict as CFDictionary)
         }
-        return byPID
+        return nil
     }
 
-    /// Front-to-back CG window IDs currently on screen — the stacking order
-    /// of the active Space. Only meaningful for the Space being displayed.
-    func onScreenWindowIDsFrontToBack() -> [UInt32] {
-        windowIDsFrontToBack(options: [.optionOnScreenOnly, .excludeDesktopElements])
+    private func windowID(of element: AXUIElement) -> UInt32? {
+        guard let axGetWindow else { return nil }
+        var windowID: UInt32 = 0
+        guard axGetWindow(element, &windowID) == .success, windowID != 0 else {
+            return nil
+        }
+        return windowID
     }
 
-    /// Global window-server order across all Spaces; per-Space slices only
-    /// approximate stacking, good enough for the undo snapshot's ranks.
+    /// Global window-server order across all Spaces; per-Space slices are the
+    /// stacking source for capture and the undo snapshot.
     func allWindowIDsFrontToBack() -> [UInt32] {
-        windowIDsFrontToBack(options: [.optionAll, .excludeDesktopElements])
-    }
-
-    private func windowIDsFrontToBack(options: CGWindowListOption) -> [UInt32] {
-        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] else { return [] }
         return list.compactMap { info in
             guard (info[kCGWindowLayer as String] as? Int) == 0,

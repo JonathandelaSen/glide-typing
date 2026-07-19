@@ -1,8 +1,11 @@
 import AppKit
 
 /// Applies a plan best-effort: one failed window never rolls back the others,
-/// every rule reports its own outcome, and a retry re-runs single rules. The
-/// executor knows services and protocols, never menu items.
+/// every rule reports its own outcome, and a retry re-runs single rules.
+/// Placement travels an itinerary of real Space visits — windows are carried
+/// by the gesture mover and framed through AX while their Space is active,
+/// because AX cannot reach windows of inactive Spaces. The executor knows
+/// services and protocols, never menu items.
 @MainActor
 final class WorkspaceProfileExecutor {
     private let spaceManager: SpaceManaging
@@ -10,26 +13,46 @@ final class WorkspaceProfileExecutor {
     private let launcher: WorkspaceApplicationLauncher
     private let recipes: WorkspaceWindowRecipeRegistry
     private let undoStore: WorkspaceUndoStore
+    private let mover: WorkspaceWindowMover
 
     init(spaceManager: SpaceManaging, catalog: WorkspaceWindowCatalog,
          launcher: WorkspaceApplicationLauncher,
-         recipes: WorkspaceWindowRecipeRegistry, undoStore: WorkspaceUndoStore) {
+         recipes: WorkspaceWindowRecipeRegistry, undoStore: WorkspaceUndoStore,
+         mover: WorkspaceWindowMover) {
         self.spaceManager = spaceManager
         self.catalog = catalog
         self.launcher = launcher
         self.recipes = recipes
         self.undoStore = undoStore
+        self.mover = mover
+    }
+
+    struct PlacementJob {
+        var label: String
+        var windowID: UInt32
+        var pid: pid_t
+        var sourceOrdinal: Int?
+        var targetOrdinal: Int
+        var targetFrame: CGRect
+        var needsUnminimize: Bool
+        var minimizeAfterPlacement = false
+        var stackingRank: Int
     }
 
     func apply(_ profile: WorkspaceProfile,
                limitToRuleIDs: Set<UUID>? = nil) async -> WorkspaceApplyReport {
+        let startedAt = Date()
         var effective = profile
         if let limitToRuleIDs {
             effective.rules = profile.rules.filter { limitToRuleIDs.contains($0.id) }
         }
+        WorkspaceLog.write("apply start: profile \"\(profile.name)\", "
+            + "\(effective.rules.count) rules"
+            + (limitToRuleIDs == nil ? "" : " (retry subset)"))
 
         func blockedReport(_ reason: String) -> WorkspaceApplyReport {
-            WorkspaceApplyReport(
+            WorkspaceLog.write("apply blocked: \(reason)")
+            return WorkspaceApplyReport(
                 profileID: profile.id, profileName: profile.name,
                 results: effective.rules.filter { !$0.isExcluded }
                     .map { WorkspaceRuleResult(rule: $0, outcome: .blocked(reason)) },
@@ -59,12 +82,17 @@ final class WorkspaceProfileExecutor {
 
         let displayUUID = currentDisplay.uuid
         let visibleFrame = currentDisplay.visibleFrame
+        let orderedSpaceIDs = spaceManager.orderedUserSpaceIDs(displayUUID: displayUUID)
         var spaceIDByOrdinal: [Int: UInt64] = [:]
-        for (index, spaceID) in spaceManager
-            .orderedUserSpaceIDs(displayUUID: displayUUID).enumerated() {
+        for (index, spaceID) in orderedSpaceIDs.enumerated() {
             spaceIDByOrdinal[index + 1] = spaceID
         }
+        WorkspaceLog.write("apply: display ok, spaces by ordinal "
+            + spaceIDByOrdinal.sorted { $0.key < $1.key }
+                .map { "\($0.key)→\($0.value)" }.joined(separator: " ")
+            + ", visible \(WorkspaceLog.describe(visibleFrame))")
 
+        var firstPlan = true
         func planNow() -> (WorkspaceApplyPlan, [UInt32: WorkspaceWindowCatalog.Entry]) {
             let entries = catalog.snapshot(spaceManager: spaceManager,
                                            displayUUID: displayUUID)
@@ -77,6 +105,25 @@ final class WorkspaceProfileExecutor {
                 spaceIDByOrdinal: spaceIDByOrdinal,
                 visibleFrame: visibleFrame,
                 creationRecipeBundleIDs: recipes.creationRecipeBundleIDs))
+            if firstPlan {
+                firstPlan = false
+                let managed = Set(effective.rules.map(\.bundleID))
+                for entry in entries.map(\.live) where managed.contains(entry.bundleID) {
+                    WorkspaceLog.write("live: win \(entry.cgWindowID) \(entry.bundleID)"
+                        + " space=\(entry.spaceID.map(String.init) ?? "?")"
+                        + "(ord \(entry.spaceOrdinal.map(String.init) ?? "?"))"
+                        + " min=\(entry.isMinimized)"
+                        + " \(WorkspaceLog.describe(entry.frame))")
+                }
+            }
+            for rulePlan in plan.rulePlans {
+                WorkspaceLog.write("plan \"\(rulePlan.rule.slotName)\""
+                    + " space \(rulePlan.rule.spaceOrdinal): \(rulePlan.action)"
+                    + " matched=\(rulePlan.matchedWindowID.map(String.init) ?? "-")"
+                    + " needs(space=\(rulePlan.needsSpaceMove)"
+                    + " frame=\(rulePlan.needsFrameChange)"
+                    + " unmin=\(rulePlan.needsUnminimize))")
+            }
             return (plan, byID)
         }
 
@@ -97,9 +144,13 @@ final class WorkspaceProfileExecutor {
             switch await launcher.ensureRunning(bundleID: bundleID) {
             case .success:
                 affected.forEach { provenance[$0] = .launched }
-                _ = await waitForWindowCount(bundleID: bundleID, atLeast: 1,
-                                             displayUUID: displayUUID, timeout: 10)
+                let appeared = await waitForWindowCount(
+                    bundleID: bundleID, atLeast: 1,
+                    displayUUID: displayUUID, timeout: 10)
+                WorkspaceLog.write("launch \(bundleID): running, first window "
+                    + (appeared ? "appeared" : "timed out"))
             case .failure(let reason):
+                WorkspaceLog.write("launch \(bundleID): \(reason)")
                 affected.forEach { failureByRuleID[$0] = reason }
             }
         }
@@ -127,20 +178,53 @@ final class WorkspaceProfileExecutor {
             }
             for ruleID in ruleIDs {
                 let before = windowCount(bundleID: bundleID, displayUUID: displayUUID)
+                WorkspaceLog.write("create window: \(recipe.id) (have \(before))")
                 guard await recipe.createWindow(app) else {
+                    WorkspaceLog.write("create window: \(recipe.id) failed to trigger")
                     failureByRuleID[ruleID] = "The window recipe failed to trigger"
                     continue
                 }
                 if await waitForWindowCount(bundleID: bundleID, atLeast: before + 1,
                                             displayUUID: displayUUID, timeout: 8) {
+                    WorkspaceLog.write("create window: \(recipe.id) appeared")
                     provenance[ruleID] = .created
                 } else {
+                    WorkspaceLog.write("create window: \(recipe.id) never appeared")
                     failureByRuleID[ruleID] = "The new window never appeared"
                 }
             }
         }
         if !createRuleIDsByBundle.isEmpty {
             (plan, entriesByID) = planNow()
+        }
+
+        var jobs: [PlacementJob] = []
+        var ruleIDByWindowID: [UInt32: UUID] = [:]
+        for rulePlan in plan.rulePlans where rulePlan.action == .move {
+            let rule = rulePlan.rule
+            guard failureByRuleID[rule.id] == nil else { continue }
+            guard let windowID = rulePlan.matchedWindowID,
+                  let entry = entriesByID[windowID],
+                  let targetFrame = rulePlan.targetFrame else {
+                failureByRuleID[rule.id] = "The plan lost its window"
+                continue
+            }
+            ruleIDByWindowID[windowID] = rule.id
+            jobs.append(PlacementJob(label: rule.slotName,
+                                     windowID: windowID,
+                                     pid: entry.pid,
+                                     sourceOrdinal: entry.live.spaceOrdinal,
+                                     targetOrdinal: rule.spaceOrdinal,
+                                     targetFrame: targetFrame,
+                                     needsUnminimize: rulePlan.needsUnminimize,
+                                     stackingRank: rule.stackingRank))
+        }
+        let placementFailures = await performPlacements(
+            jobs, displayUUID: displayUUID, spaceIDs: orderedSpaceIDs)
+        for (windowID, failure) in placementFailures {
+            if let ruleID = ruleIDByWindowID[windowID] {
+                failureByRuleID[ruleID] = failure
+            }
         }
 
         var results: [WorkspaceRuleResult] = []
@@ -160,23 +244,8 @@ final class WorkspaceProfileExecutor {
                 results.append(WorkspaceRuleResult(rule: rule,
                                                    outcome: success(afterMove: false)))
             case .move:
-                guard let windowID = rulePlan.matchedWindowID,
-                      let entry = entriesByID[windowID],
-                      let targetSpace = rulePlan.targetSpaceID,
-                      let targetFrame = rulePlan.targetFrame else {
-                    results.append(WorkspaceRuleResult(
-                        rule: rule, outcome: .failed("The plan lost its window")))
-                    continue
-                }
-                if let problem = await place(entry: entry, rulePlan: rulePlan,
-                                             targetSpace: targetSpace,
-                                             targetFrame: targetFrame) {
-                    results.append(WorkspaceRuleResult(rule: rule,
-                                                       outcome: .failed(problem)))
-                } else {
-                    results.append(WorkspaceRuleResult(rule: rule,
-                                                       outcome: success(afterMove: true)))
-                }
+                results.append(WorkspaceRuleResult(rule: rule,
+                                                   outcome: success(afterMove: true)))
             case .launchAndAdopt:
                 results.append(WorkspaceRuleResult(
                     rule: rule, outcome: .failed("No window appeared after launching")))
@@ -186,78 +255,208 @@ final class WorkspaceProfileExecutor {
             }
         }
 
-        restoreStacking(plan: plan, results: results, entriesByID: entriesByID)
-
         var diagnostics = plan.diagnostics
         diagnostics.append(contentsOf: DisplayConfigurationResolver
             .currentPrerequisiteIssues())
-        return WorkspaceApplyReport(profileID: profile.id, profileName: profile.name,
-                                    results: results,
-                                    extraWindows: plan.extraWindows,
-                                    diagnostics: diagnostics, finishedAt: Date())
+        let report = WorkspaceApplyReport(profileID: profile.id,
+                                          profileName: profile.name,
+                                          results: results,
+                                          extraWindows: plan.extraWindows,
+                                          diagnostics: diagnostics,
+                                          finishedAt: Date())
+        for result in results {
+            WorkspaceLog.write("result \"\(result.rule.slotName)\": \(result.outcome.label)")
+        }
+        let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
+        WorkspaceLog.write("apply done in \(elapsed)ms: \(report.headline)")
+        return report
     }
 
     func undoLastApply() async -> [String] {
         guard let snapshot = undoStore.latest else { return ["Nothing to undo"] }
+        WorkspaceLog.write("undo start: \(snapshot.windows.count) windows "
+            + "from \"\(snapshot.profileName)\"")
         let current = DisplayConfigurationResolver.currentSignature(
             spaceManager: spaceManager)
-        var validSpaces = Set<UInt64>()
-        for display in current.displays {
-            validSpaces.formUnion(spaceManager.orderedUserSpaceIDs(displayUUID: display.uuid))
-        }
         guard let displayUUID = current.displays.first(where: \.isPrimary)?.uuid
             ?? current.displays.first?.uuid else { return ["No display detected"] }
+        let spaceIDs = spaceManager.orderedUserSpaceIDs(displayUUID: displayUUID)
         let entries = catalog.snapshot(spaceManager: spaceManager,
                                        displayUUID: displayUUID)
         let byID = Dictionary(entries.map { ($0.live.cgWindowID, $0) },
                               uniquingKeysWith: { first, _ in first })
 
         var lines: [String] = []
+        var jobs: [PlacementJob] = []
+        var labelByWindowID: [UInt32: String] = [:]
         for state in snapshot.windows {
             guard let entry = byID[state.cgWindowID] else {
                 lines.append("\(state.slotName): the window no longer exists")
                 continue
             }
-            if entry.window.isMinimized() && !state.wasMinimized {
-                entry.window.setMinimized(false)
-                _ = await poll(timeout: 2) { !entry.window.isMinimized() }
+            let targetOrdinal: Int
+            if let spaceID = state.spaceID, let index = spaceIDs.firstIndex(of: spaceID) {
+                targetOrdinal = index + 1
+            } else if let ordinal = entry.live.spaceOrdinal {
+                lines.append("\(state.slotName): its original Space is gone; "
+                    + "only the frame was restored")
+                targetOrdinal = ordinal
+            } else {
+                lines.append("\(state.slotName): not reachable on any Space")
+                continue
             }
-            if let spaceID = state.spaceID {
-                if validSpaces.contains(spaceID) {
-                    if spaceManager.spaceID(ofWindow: state.cgWindowID) != spaceID {
-                        spaceManager.moveWindows([state.cgWindowID], toSpace: spaceID)
-                        _ = await poll(timeout: 2) {
-                            self.spaceManager.spaceID(ofWindow: state.cgWindowID) == spaceID
-                        }
-                    }
-                } else {
-                    lines.append("\(state.slotName): its original Space is gone; "
-                        + "only the frame was restored")
-                }
-            }
-            entry.window.setFrame(state.frame)
-            _ = await poll(timeout: 2) {
-                entry.window.frame().map {
-                    WorkspaceGeometry.approximatelyEqual($0, state.frame, tolerance: 4)
-                } ?? false
-            }
-            if state.wasMinimized && !entry.window.isMinimized() {
-                entry.window.setMinimized(true)
-            }
-            lines.append("\(state.slotName): restored")
+            labelByWindowID[state.cgWindowID] = state.slotName
+            jobs.append(PlacementJob(label: state.slotName,
+                                     windowID: state.cgWindowID,
+                                     pid: entry.pid,
+                                     sourceOrdinal: entry.live.spaceOrdinal,
+                                     targetOrdinal: targetOrdinal,
+                                     targetFrame: state.frame,
+                                     needsUnminimize: entry.live.isMinimized
+                                         && !state.wasMinimized,
+                                     minimizeAfterPlacement: state.wasMinimized,
+                                     stackingRank: state.stackingRank))
         }
-
-        for group in Dictionary(grouping: snapshot.windows, by: \.spaceID).values {
-            for state in group.sorted(by: { $0.stackingRank > $1.stackingRank })
-                where !state.wasMinimized {
-                byID[state.cgWindowID]?.window.raise()
+        let failures = await performPlacements(jobs, displayUUID: displayUUID,
+                                               spaceIDs: spaceIDs)
+        for job in jobs {
+            if let failure = failures[job.windowID] {
+                lines.append("\(job.label): \(failure)")
+            } else {
+                lines.append("\(job.label): restored")
             }
         }
         undoStore.clear()
+        WorkspaceLog.write("undo done: \(lines.joined(separator: "; "))")
         return lines
     }
 
-    // MARK: - Steps
+    // MARK: - Placement itinerary
+
+    private func performPlacements(_ jobs: [PlacementJob], displayUUID: String,
+                                   spaceIDs: [UInt64]) async -> [UInt32: String] {
+        guard !jobs.isEmpty else { return [:] }
+        var failures: [UInt32: String] = [:]
+        let originSpace = spaceManager.currentSpaceID(displayUUID: displayUUID)
+        let originApp = NSWorkspace.shared.frontmostApplication
+        let originCursor = CGEvent(source: nil)?.location
+
+        func ordinal(of spaceID: UInt64?) -> Int? {
+            spaceID.flatMap { spaceIDs.firstIndex(of: $0) }.map { $0 + 1 }
+        }
+
+        var pending = jobs
+        var stalls = 0
+        while !pending.isEmpty && stalls < jobs.count * 2 + 4 {
+            stalls += 1
+            let cursor = ordinal(of: spaceManager
+                .currentSpaceID(displayUUID: displayUUID)) ?? 1
+            let order = WorkspacePlanBuilder.placementOrder(
+                jobs: pending.map { ($0.sourceOrdinal, $0.targetOrdinal) },
+                startingAt: cursor)
+            guard let index = order.first else { break }
+            let job = pending.remove(at: index)
+            if let failure = await perform(job, displayUUID: displayUUID,
+                                           spaceIDs: spaceIDs) {
+                failures[job.windowID] = failure
+                WorkspaceLog.write("place \"\(job.label)\": \(failure)")
+            } else {
+                WorkspaceLog.write("place \"\(job.label)\": ok")
+            }
+        }
+        for job in pending {
+            failures[job.windowID] = "Skipped: the placement loop stalled"
+        }
+
+        await restoreStacking(jobs: jobs, failures: failures,
+                              displayUUID: displayUUID, spaceIDs: spaceIDs)
+
+        if let originOrdinal = ordinal(of: originSpace) {
+            _ = await mover.switchToOrdinal(originOrdinal, displayUUID: displayUUID,
+                                            spaceIDs: spaceIDs)
+        }
+        originApp?.activate()
+        if let originCursor {
+            CGWarpMouseCursorPosition(originCursor)
+        }
+        return failures
+    }
+
+    private func perform(_ job: PlacementJob, displayUUID: String,
+                         spaceIDs: [UInt64]) async -> String? {
+        WorkspaceLog.write("place \"\(job.label)\" win \(job.windowID): "
+            + "space \(job.sourceOrdinal.map(String.init) ?? "?") -> "
+            + "\(job.targetOrdinal), frame \(WorkspaceLog.describe(job.targetFrame))")
+        var sourceOrdinal = job.sourceOrdinal
+        if job.needsUnminimize {
+            guard let axWindow = catalog.axWindow(for: job.windowID, pid: job.pid) else {
+                return "The minimized window is not reachable through AX"
+            }
+            axWindow.setMinimized(false)
+            guard await poll(timeout: 3, { !axWindow.isMinimized() }) else {
+                return "Could not unminimize the window"
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            sourceOrdinal = spaceManager.spaceID(ofWindow: job.windowID)
+                .flatMap { spaceIDs.firstIndex(of: $0) }.map { $0 + 1 }
+        }
+        guard let sourceOrdinal else {
+            return "The window is not on any Space"
+        }
+        guard await mover.switchToOrdinal(sourceOrdinal, displayUUID: displayUUID,
+                                          spaceIDs: spaceIDs) else {
+            return "Could not switch to Space \(sourceOrdinal)"
+        }
+        if sourceOrdinal != job.targetOrdinal {
+            if let failure = await mover.carryWindow(job.windowID, pid: job.pid,
+                                                     toOrdinal: job.targetOrdinal,
+                                                     displayUUID: displayUUID,
+                                                     spaceIDs: spaceIDs) {
+                return failure
+            }
+        }
+        guard let axWindow = catalog.axWindow(for: job.windowID, pid: job.pid) else {
+            return "The window is not reachable through AX on Space \(job.targetOrdinal)"
+        }
+        let inPlace = axWindow.frame().map {
+            WorkspaceGeometry.approximatelyEqual($0, job.targetFrame, tolerance: 4)
+        } ?? false
+        if !inPlace {
+            axWindow.setFrame(job.targetFrame)
+            let accepted = await poll(timeout: 3) {
+                axWindow.frame().map {
+                    WorkspaceGeometry.approximatelyEqual($0, job.targetFrame, tolerance: 4)
+                } ?? false
+            }
+            guard accepted else {
+                let got = axWindow.frame().map { WorkspaceLog.describe($0) }
+                    ?? "an unreadable frame"
+                return "The window refused its frame; it reports \(got)"
+            }
+        }
+        if job.minimizeAfterPlacement {
+            axWindow.setMinimized(true)
+        }
+        return nil
+    }
+
+    /// Best effort, visiting each multi-window Space: windows are raised
+    /// back-to-front so the captured front window is raised last.
+    private func restoreStacking(jobs: [PlacementJob], failures: [UInt32: String],
+                                 displayUUID: String, spaceIDs: [UInt64]) async {
+        let placed = jobs.filter { failures[$0.windowID] == nil }
+        for (ordinal, group) in Dictionary(grouping: placed, by: \.targetOrdinal)
+            .sorted(by: { $0.key < $1.key }) where group.count > 1 {
+            guard await mover.switchToOrdinal(ordinal, displayUUID: displayUUID,
+                                              spaceIDs: spaceIDs) else { continue }
+            for job in group.sorted(by: { $0.stackingRank > $1.stackingRank }) {
+                catalog.axWindow(for: job.windowID, pid: job.pid)?.raise()
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+    }
+
+    // MARK: - Support
 
     /// Only windows this apply intends to move enter the snapshot. A retry
     /// merges into the existing snapshot, keeping the older (pre-apply)
@@ -291,64 +490,6 @@ final class WorkspaceProfileExecutor {
         } else {
             undoStore.replace(WorkspaceUndoSnapshot(profileName: profileName,
                                                     takenAt: Date(), windows: states))
-        }
-    }
-
-    private func place(entry: WorkspaceWindowCatalog.Entry,
-                       rulePlan: WorkspaceRulePlan,
-                       targetSpace: UInt64, targetFrame: CGRect) async -> String? {
-        let window = entry.window
-        let windowID = entry.live.cgWindowID
-        if window.isMinimized() {
-            window.setMinimized(false)
-            guard await poll(timeout: 3, { !window.isMinimized() }) else {
-                return "Could not unminimize the window"
-            }
-        }
-        if spaceManager.spaceID(ofWindow: windowID) != targetSpace {
-            spaceManager.moveWindows([windowID], toSpace: targetSpace)
-            guard await poll(timeout: 3, {
-                self.spaceManager.spaceID(ofWindow: windowID) == targetSpace
-            }) else {
-                return "The window did not land on Space \(rulePlan.rule.spaceOrdinal)"
-            }
-        }
-        let currentFrame = window.frame()
-        if currentFrame == nil || !WorkspaceGeometry.approximatelyEqual(
-            currentFrame!, targetFrame, tolerance: 4) {
-            window.setFrame(targetFrame)
-            let accepted = await poll(timeout: 3) {
-                window.frame().map {
-                    WorkspaceGeometry.approximatelyEqual($0, targetFrame, tolerance: 4)
-                } ?? false
-            }
-            guard accepted else {
-                let got = window.frame().map {
-                    "\(Int($0.width))×\(Int($0.height)) at (\(Int($0.origin.x)), \(Int($0.origin.y)))"
-                } ?? "an unreadable frame"
-                return "The window refused its frame; it reports \(got)"
-            }
-        }
-        return nil
-    }
-
-    /// Best effort: windows are raised back-to-front per Space so the
-    /// captured front window is raised last. Apps are never activated here —
-    /// activation would switch Spaces mid-apply.
-    private func restoreStacking(plan: WorkspaceApplyPlan,
-                                 results: [WorkspaceRuleResult],
-                                 entriesByID: [UInt32: WorkspaceWindowCatalog.Entry]) {
-        let succeeded = Set(results.filter { !$0.outcome.isFailure }.map(\.rule.id))
-        let placed = plan.rulePlans.filter {
-            succeeded.contains($0.rule.id) && $0.matchedWindowID != nil
-        }
-        for (_, group) in Dictionary(grouping: placed,
-                                     by: { $0.targetSpaceID ?? 0 }) {
-            guard group.count > 1 || group.first?.rule.stackingRank == 0 else { continue }
-            for rulePlan in group.sorted(by: { $0.rule.stackingRank > $1.rule.stackingRank }) {
-                guard let windowID = rulePlan.matchedWindowID else { continue }
-                entriesByID[windowID]?.window.raise()
-            }
         }
     }
 

@@ -38,7 +38,8 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
             spaceManager: spaceManager, catalog: catalog, recipes: recipes)
         self.executor = WorkspaceProfileExecutor(
             spaceManager: spaceManager, catalog: catalog,
-            launcher: launcher, recipes: recipes, undoStore: undoStore)
+            launcher: launcher, recipes: recipes, undoStore: undoStore,
+            mover: WorkspaceWindowMover(spaceManager: spaceManager, catalog: catalog))
         super.init()
     }
 
@@ -55,6 +56,7 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        WorkspaceLog.write("menu open: \(store.profiles.count) profiles, busy=\(busy)")
 
         if case .unavailable(let reason) = spaceManager.capability {
             let unavailable = NSMenuItem(title: "Unavailable on this macOS build",
@@ -62,6 +64,7 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
             unavailable.isEnabled = false
             unavailable.toolTip = reason
             menu.addItem(unavailable)
+            addDiagnosticsItem(to: menu)
             return
         }
         if busy {
@@ -90,6 +93,8 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
             item.isEnabled = mismatches.isEmpty && !busy
             if !mismatches.isEmpty {
                 item.toolTip = mismatches.joined(separator: "\n")
+                WorkspaceLog.write("menu: \"\(profile.name)\" disabled: "
+                    + mismatches.joined(separator: "; "))
             }
             menu.addItem(item)
         }
@@ -118,24 +123,46 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
                                 action: #selector(manageProfiles), keyEquivalent: "")
         manage.target = self
         menu.addItem(manage)
+        addDiagnosticsItem(to: menu)
+    }
+
+    private func addDiagnosticsItem(to menu: NSMenu) {
+        menu.addItem(.separator())
+        let log = NSMenuItem(title: "Open Diagnostics Log",
+                             action: #selector(openDiagnosticsLog), keyEquivalent: "")
+        log.target = self
+        menu.addItem(log)
+    }
+
+    @objc private func openDiagnosticsLog() {
+        WorkspaceLog.write("diagnostics log opened from the menu")
+        NSWorkspace.shared.open(WorkspaceLog.url)
     }
 
     // MARK: - Apply
 
     @objc private func applyProfileItem(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID,
-              let profile = store.profile(id: id) else { return }
+              let profile = store.profile(id: id) else {
+            WorkspaceLog.write("apply click ignored: menu item lost its profile")
+            return
+        }
+        WorkspaceLog.write("apply click: \"\(profile.name)\"")
         lastAppliedProfile = profile
         runApply(profile: profile, limitTo: nil)
     }
 
     private func runApply(profile: WorkspaceProfile, limitTo: Set<UUID>?) {
-        guard !busy else { return }
+        guard !busy else {
+            WorkspaceLog.write("apply ignored: another operation is running")
+            return
+        }
         busy = true
         Task { [weak self] in
             guard let self else { return }
             let report = await self.executor.apply(profile, limitToRuleIDs: limitTo)
             self.busy = false
+            WorkspaceLog.write("report shown: \(report.headline)")
             self.presentReport(report, mergingIntoPrevious: limitTo != nil)
         }
     }
@@ -173,7 +200,12 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
     }
 
     private func capture(into existing: WorkspaceProfile?) {
-        guard !busy else { return }
+        guard !busy else {
+            WorkspaceLog.write("capture ignored: another operation is running")
+            return
+        }
+        WorkspaceLog.write("capture click"
+            + (existing.map { " (updating \"\($0.name)\")" } ?? ""))
         busy = true
         Task { [weak self] in
             guard let self else { return }
@@ -184,6 +216,7 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
                 self.presentCapturePreview(result, updating: existing)
             } catch {
                 self.busy = false
+                WorkspaceLog.write("capture failed: \(error)")
                 self.presentError(title: "Capture failed",
                                   message: String(describing: error))
             }
@@ -212,18 +245,32 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
         }
         alert.addButton(withTitle: existing == nil ? "Save Profile" : "Update Profile")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            WorkspaceLog.write("capture discarded from the preview")
+            return
+        }
+        let saved: Bool
+        let savedName: String
         if var existing {
             existing.display = result.profile.display
             existing.rules = result.profile.rules
-            store.save(existing)
+            saved = store.save(existing)
+            savedName = existing.name
         } else {
             var profile = result.profile
             if let name = nameField?.stringValue
                 .trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
                 profile.name = name
             }
-            store.save(profile)
+            saved = store.save(profile)
+            savedName = profile.name
+        }
+        WorkspaceLog.write("profile \"\(savedName)\" "
+            + (saved ? "saved" : "NOT saved: \(store.loadFailure ?? "write failed")"))
+        if !saved {
+            presentError(title: "The profile could not be saved",
+                         message: store.loadFailure
+                            ?? "Writing workspace_profiles.json failed")
         }
         refreshManageWindow()
     }
@@ -232,6 +279,7 @@ final class WorkspaceProfilesController: NSObject, NSMenuDelegate,
 
     @objc private func undoLastApply() {
         guard !busy else { return }
+        WorkspaceLog.write("undo click")
         busy = true
         Task { [weak self] in
             guard let self else { return }

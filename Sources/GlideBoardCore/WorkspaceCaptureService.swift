@@ -1,9 +1,14 @@
 import AppKit
 
-/// Guided read-only capture: visits every user Space on the display, records
-/// the supported windows front-to-back, and returns to the original Space and
-/// frontmost app even when a Space fails to capture. Nothing is saved here —
-/// the controller previews the result and persists only after confirmation.
+/// Traversal-free capture: every window is asked for its own Space through
+/// the adapter, which answers precisely for windows on any Space, and
+/// per-Space stacking comes from the global front-to-back window order. The
+/// v36 guided traversal was removed after live evidence showed the on-screen
+/// window list keeps reporting the previous Space's windows for over a
+/// second after a switch, which replicated one Space's windows across all of
+/// them (docs/plans/05, capture incident 2026-07-18). Nothing is saved here
+/// — the controller previews the result and persists only after
+/// confirmation.
 @MainActor
 final class WorkspaceCaptureService {
     struct CapturedWindow: Equatable {
@@ -63,50 +68,32 @@ final class WorkspaceCaptureService {
             ?? signature.displays.first else { throw CaptureError.noDisplay }
         let spaceIDs = spaceManager.orderedUserSpaceIDs(displayUUID: display.uuid)
         guard !spaceIDs.isEmpty else { throw CaptureError.noSpaces }
+        WorkspaceLog.write("capture start: \(spaceIDs.count) spaces on "
+            + "\(display.localizedName), no traversal")
 
-        let originalSpace = spaceManager.currentSpaceID(displayUUID: display.uuid)
-        let originalApp = NSWorkspace.shared.frontmostApplication
+        let entries = catalog.snapshot(spaceManager: spaceManager,
+                                       displayUUID: display.uuid)
+        let captured = Self.capturedWindows(
+            from: entries.map { entry in
+                CaptureCandidate(cgWindowID: entry.live.cgWindowID,
+                                 bundleID: entry.live.bundleID,
+                                 appName: entry.appName,
+                                 spaceOrdinal: entry.live.spaceOrdinal,
+                                 isMinimized: entry.live.isMinimized,
+                                 frame: entry.live.frame,
+                                 title: entry.live.title,
+                                 subrole: entry.live.subrole)
+            },
+            globalOrderFrontToBack: catalog.allWindowIDsFrontToBack())
 
-        var entriesByWindowID: [UInt32: WorkspaceWindowCatalog.Entry] = [:]
-        for entry in catalog.snapshot(spaceManager: spaceManager,
-                                      displayUUID: display.uuid) {
-            entriesByWindowID[entry.live.cgWindowID] = entry
-        }
-
-        var captured: [CapturedWindow] = []
         var diagnostics = DisplayConfigurationResolver.currentPrerequisiteIssues()
-        for (index, spaceID) in spaceIDs.enumerated() {
-            let ordinal = index + 1
-            if spaceManager.currentSpaceID(displayUUID: display.uuid) != spaceID {
-                spaceManager.switchToSpace(spaceID, displayUUID: display.uuid)
-                let arrived = await settle(on: spaceID, displayUUID: display.uuid)
-                if !arrived {
-                    diagnostics.append("Space \(ordinal) could not be visited; skipped")
-                    continue
-                }
-            }
-            var rank = 0
-            for windowID in catalog.onScreenWindowIDsFrontToBack() {
-                guard let entry = entriesByWindowID[windowID] else { continue }
-                captured.append(CapturedWindow(
-                    cgWindowID: windowID,
-                    bundleID: entry.live.bundleID,
-                    appName: entry.appName,
-                    spaceOrdinal: ordinal,
-                    stackingRank: rank,
-                    frame: entry.window.frame() ?? entry.live.frame,
-                    title: entry.live.title,
-                    subrole: entry.live.subrole))
-                rank += 1
-            }
+        let skipped = entries.count - captured.count
+        if skipped > 0 {
+            diagnostics.append("\(skipped) window(s) skipped: minimized or not "
+                + "assigned to any Space")
         }
-
-        if let originalSpace,
-           spaceManager.currentSpaceID(displayUUID: display.uuid) != originalSpace {
-            spaceManager.switchToSpace(originalSpace, displayUUID: display.uuid)
-            _ = await settle(on: originalSpace, displayUUID: display.uuid)
-        }
-        originalApp?.activate()
+        WorkspaceLog.write("capture done: \(captured.count) windows"
+            + (diagnostics.isEmpty ? "" : "; \(diagnostics.joined(separator: "; "))"))
 
         guard !captured.isEmpty else { throw CaptureError.nothingCaptured }
 
@@ -129,16 +116,57 @@ final class WorkspaceCaptureService {
         return byBundle
     }
 
-    private func settle(on spaceID: UInt64, displayUUID: String) async -> Bool {
-        let deadline = Date().addingTimeInterval(2)
-        while Date() < deadline {
-            if spaceManager.currentSpaceID(displayUUID: displayUUID) == spaceID {
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+    struct CaptureCandidate: Equatable {
+        var cgWindowID: UInt32
+        var bundleID: String
+        var appName: String
+        var spaceOrdinal: Int?
+        var isMinimized: Bool
+        var frame: CGRect
+        var title: String?
+        var subrole: String?
+    }
+
+    /// Pure shaping of a snapshot into captured windows: a window must sit on
+    /// exactly one known user Space and not be minimized; each window ID is
+    /// captured once; per-Space stacking rank follows the global
+    /// front-to-back order (rank 0 = that Space's front window).
+    static func capturedWindows(from candidates: [CaptureCandidate],
+                                globalOrderFrontToBack: [UInt32]) -> [CapturedWindow] {
+        var globalRank: [UInt32: Int] = [:]
+        for (index, windowID) in globalOrderFrontToBack.enumerated() {
+            globalRank[windowID] = index
         }
-        return false
+        var seen = Set<UInt32>()
+        var eligible: [CaptureCandidate] = []
+        for candidate in candidates {
+            guard candidate.spaceOrdinal != nil, !candidate.isMinimized,
+                  !seen.contains(candidate.cgWindowID) else { continue }
+            seen.insert(candidate.cgWindowID)
+            eligible.append(candidate)
+        }
+        var rankCounters: [Int: Int] = [:]
+        return eligible
+            .sorted {
+                let left = ($0.spaceOrdinal!, globalRank[$0.cgWindowID] ?? Int.max,
+                            $0.cgWindowID)
+                let right = ($1.spaceOrdinal!, globalRank[$1.cgWindowID] ?? Int.max,
+                             $1.cgWindowID)
+                return left < right
+            }
+            .map { candidate in
+                let ordinal = candidate.spaceOrdinal!
+                let rank = rankCounters[ordinal, default: 0]
+                rankCounters[ordinal] = rank + 1
+                return CapturedWindow(cgWindowID: candidate.cgWindowID,
+                                      bundleID: candidate.bundleID,
+                                      appName: candidate.appName,
+                                      spaceOrdinal: ordinal,
+                                      stackingRank: rank,
+                                      frame: candidate.frame,
+                                      title: candidate.title,
+                                      subrole: candidate.subrole)
+            }
     }
 
     /// Pure rule construction so slot naming and normalization stay checkable.

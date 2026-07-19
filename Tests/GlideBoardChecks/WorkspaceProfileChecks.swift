@@ -391,6 +391,49 @@ func workspaceProfileChecks() async {
         try expectNil(store.latest)
     }
 
+    await Checks.shared.test("capture keeps one entry per window on its own Space only") {
+        func candidate(_ id: UInt32, _ bundle: String, ordinal: Int?,
+                       minimized: Bool = false) -> WorkspaceCaptureService.CaptureCandidate {
+            WorkspaceCaptureService.CaptureCandidate(
+                cgWindowID: id, bundleID: bundle, appName: bundle,
+                spaceOrdinal: ordinal, isMinimized: minimized,
+                frame: CGRect(x: 0, y: 25, width: 800, height: 600),
+                title: nil, subrole: "AXStandardWindow")
+        }
+        let captured = WorkspaceCaptureService.capturedWindows(
+            from: [
+                candidate(10, "com.spotify.client", ordinal: 5),
+                candidate(10, "com.spotify.client", ordinal: 5),
+                candidate(11, "com.apple.finder", ordinal: nil),
+                candidate(12, "com.openai.codex", ordinal: 3, minimized: true),
+                candidate(13, "com.anthropic.claudefordesktop", ordinal: 3),
+                candidate(14, "com.openai.codex", ordinal: 3),
+            ],
+            globalOrderFrontToBack: [10, 14, 13, 11])
+        try expectEqual(captured.map(\.cgWindowID), [14, 13, 10],
+                        "spaceless (11), minimized (12) and duplicate entries drop; "
+                        + "sorted by Space, then global front-to-back order")
+        try expectEqual(captured.map(\.stackingRank), [0, 1, 0],
+                        "ranks per Space follow the global front-to-back order")
+    }
+
+    await Checks.shared.test("a Space's phantom repeats cannot survive capture shaping") {
+        // The v36 incident: one Space's windows reported on-screen for every
+        // visited Space. With per-window Space assignment each window appears
+        // exactly once, on its own Space.
+        let trio = (1...3).map { id in
+            WorkspaceCaptureService.CaptureCandidate(
+                cgWindowID: UInt32(id), bundleID: "app\(id)", appName: "App \(id)",
+                spaceOrdinal: 7, isMinimized: false,
+                frame: CGRect(x: 0, y: 25, width: 800, height: 600),
+                title: nil, subrole: "AXStandardWindow")
+        }
+        let captured = WorkspaceCaptureService.capturedWindows(
+            from: trio + trio + trio, globalOrderFrontToBack: [1, 2, 3])
+        try expectEqual(captured.count, 3)
+        try expectEqual(Set(captured.map(\.spaceOrdinal)), [7])
+    }
+
     await Checks.shared.test("captured windows become lettered slots and hint-only titles") {
         let display = makeDisplay()
         let captured = [
@@ -459,6 +502,31 @@ func workspaceProfileChecks() async {
         try expectTrue(lines[0].contains("6 Spaces"), lines[0])
         try expectEqual(lines[1], "Space 1: Spotify, OrbStack")
         try expectEqual(lines[2], "Space 6: Finder")
+    }
+
+    await Checks.shared.test("placement order consumes the current Space first") {
+        let jobs: [(source: Int?, target: Int)] = [
+            (source: 3, target: 1), (source: 3, target: 3), (source: 1, target: 1),
+            (source: nil, target: 5),
+        ]
+        let order = WorkspacePlanBuilder.placementOrder(jobs: jobs, startingAt: 3)
+        try expectEqual(order, [1, 0, 2, 3],
+                        "frame-only on Space 3, then the carry 3→1, then Space 1's "
+                        + "job, then the Space-less window")
+        try expectEqual(WorkspacePlanBuilder.placementOrder(jobs: [], startingAt: 1), [])
+        let all = WorkspacePlanBuilder.placementOrder(jobs: jobs, startingAt: 9)
+        try expectEqual(all.sorted(), [0, 1, 2, 3], "every job is visited exactly once")
+    }
+
+    await Checks.shared.test("the drag grab point stays inside the title bar") {
+        let wide = WorkspaceWindowMover.grabPoint(
+            for: CGRect(x: 100, y: 200, width: 1600, height: 900))
+        try expectEqual(wide, CGPoint(x: 240, y: 212),
+                        "wide windows clamp the inset to 140")
+        let narrow = WorkspaceWindowMover.grabPoint(
+            for: CGRect(x: 0, y: 30, width: 120, height: 300))
+        try expectEqual(narrow, CGPoint(x: 40, y: 42),
+                        "narrow windows keep at least 40pt from the left edge")
     }
 
     await Checks.shared.test("the recipe registry covers the initial app inventory") {
