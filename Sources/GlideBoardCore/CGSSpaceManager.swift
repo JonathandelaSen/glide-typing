@@ -107,6 +107,15 @@ final class CGSSpaceManager: SpaceManaging {
         }
     }
 
+    func orderedUserSpaceUUIDs(displayUUID: String) -> [String] {
+        guard let entry = displayEntry(forUUID: displayUUID),
+              let spaces = entry["Spaces"] as? [[String: Any]] else { return [] }
+        return spaces.compactMap { space in
+            guard (space["type"] as? Int ?? -1) == 0 else { return nil }
+            return space["uuid"] as? String ?? ""
+        }
+    }
+
     func currentSpaceID(displayUUID: String) -> UInt64? {
         guard let getCurrentSpace else { return nil }
         let id = getCurrentSpace(connection, displayUUID as CFString)

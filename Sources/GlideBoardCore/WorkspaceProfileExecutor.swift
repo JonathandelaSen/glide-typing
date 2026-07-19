@@ -31,6 +31,8 @@ final class WorkspaceProfileExecutor {
         var label: String
         var windowID: UInt32
         var pid: pid_t
+        var bundleID: String
+        var appName: String
         var sourceOrdinal: Int?
         var targetOrdinal: Int
         var targetFrame: CGRect
@@ -91,6 +93,26 @@ final class WorkspaceProfileExecutor {
             + spaceIDByOrdinal.sorted { $0.key < $1.key }
                 .map { "\($0.key)→\($0.value)" }.joined(separator: " ")
             + ", visible \(WorkspaceLog.describe(visibleFrame))")
+
+        // Profiles restore POSITIONS: "Desktop 3" means the third desktop
+        // left-to-right, the user's mental model. Reordering desktops moves
+        // windows with them, so after a reorder the windows are misplaced
+        // positionally and the apply moves them back. The captured UUIDs are
+        // only the telltale that a reorder happened.
+        let currentUUIDs = spaceManager.orderedUserSpaceUUIDs(displayUUID: displayUUID)
+        let byIdentity = WorkspacePlanBuilder.resolveSpaceOrdinals(
+            effective.rules, currentUUIDs: currentUUIDs)
+        let reorderedSlots = zip(effective.rules, byIdentity)
+            .filter { $0.spaceOrdinal != $1.spaceOrdinal }
+            .map(\.0.slotName)
+        var reorderDiagnostics: [String] = []
+        if !reorderedSlots.isEmpty {
+            reorderDiagnostics.append("The Desktops themselves were reordered since "
+                + "this profile was captured; windows are being restored to the "
+                + "captured left-to-right positions")
+            WorkspaceLog.write("apply: desktops reordered since capture; "
+                + "positional restore for \(reorderedSlots.count) rule(s)")
+        }
 
         var firstPlan = true
         func planNow() -> (WorkspaceApplyPlan, [UInt32: WorkspaceWindowCatalog.Entry]) {
@@ -213,6 +235,8 @@ final class WorkspaceProfileExecutor {
             jobs.append(PlacementJob(label: rule.slotName,
                                      windowID: windowID,
                                      pid: entry.pid,
+                                     bundleID: entry.live.bundleID,
+                                     appName: entry.appName,
                                      sourceOrdinal: entry.live.spaceOrdinal,
                                      targetOrdinal: rule.spaceOrdinal,
                                      targetFrame: targetFrame,
@@ -220,7 +244,9 @@ final class WorkspaceProfileExecutor {
                                      stackingRank: rule.stackingRank))
         }
         let placementFailures = await performPlacements(
-            jobs, displayUUID: displayUUID, spaceIDs: orderedSpaceIDs)
+            jobs, liveWindows: entriesByID.values.map(\.live),
+            displayUUID: displayUUID, spaceIDs: orderedSpaceIDs,
+            spaceUUIDs: currentUUIDs)
         for (windowID, failure) in placementFailures {
             if let ruleID = ruleIDByWindowID[windowID] {
                 failureByRuleID[ruleID] = failure
@@ -255,7 +281,7 @@ final class WorkspaceProfileExecutor {
             }
         }
 
-        var diagnostics = plan.diagnostics
+        var diagnostics = reorderDiagnostics + plan.diagnostics
         diagnostics.append(contentsOf: DisplayConfigurationResolver
             .currentPrerequisiteIssues())
         let report = WorkspaceApplyReport(profileID: profile.id,
@@ -309,6 +335,8 @@ final class WorkspaceProfileExecutor {
             jobs.append(PlacementJob(label: state.slotName,
                                      windowID: state.cgWindowID,
                                      pid: entry.pid,
+                                     bundleID: entry.live.bundleID,
+                                     appName: entry.appName,
                                      sourceOrdinal: entry.live.spaceOrdinal,
                                      targetOrdinal: targetOrdinal,
                                      targetFrame: state.frame,
@@ -317,8 +345,10 @@ final class WorkspaceProfileExecutor {
                                      minimizeAfterPlacement: state.wasMinimized,
                                      stackingRank: state.stackingRank))
         }
-        let failures = await performPlacements(jobs, displayUUID: displayUUID,
-                                               spaceIDs: spaceIDs)
+        let failures = await performPlacements(
+            jobs, liveWindows: byID.values.map(\.live),
+            displayUUID: displayUUID, spaceIDs: spaceIDs,
+            spaceUUIDs: spaceManager.orderedUserSpaceUUIDs(displayUUID: displayUUID))
         for job in jobs {
             if let failure = failures[job.windowID] {
                 lines.append("\(job.label): \(failure)")
@@ -333,8 +363,11 @@ final class WorkspaceProfileExecutor {
 
     // MARK: - Placement itinerary
 
-    private func performPlacements(_ jobs: [PlacementJob], displayUUID: String,
-                                   spaceIDs: [UInt64]) async -> [UInt32: String] {
+    private func performPlacements(_ jobs: [PlacementJob],
+                                   liveWindows: [WorkspaceLiveWindow],
+                                   displayUUID: String,
+                                   spaceIDs: [UInt64],
+                                   spaceUUIDs: [String]) async -> [UInt32: String] {
         guard !jobs.isEmpty else { return [:] }
         var failures: [UInt32: String] = [:]
         let originSpace = spaceManager.currentSpaceID(displayUUID: displayUUID)
@@ -345,7 +378,70 @@ final class WorkspaceProfileExecutor {
             spaceID.flatMap { spaceIDs.firstIndex(of: $0) }.map { $0 + 1 }
         }
 
-        var pending = jobs
+        // Phase 1 — whole-app moves ride the Dock's Assign To command: one
+        // visit per target Space, one menu press per app, frames set there.
+        let moveJobs = jobs.filter { $0.sourceOrdinal != $0.targetOrdinal }
+        let candidatePlan = WorkspacePlanBuilder.dockAssignPlan(
+            jobs: moveJobs.map { ($0.bundleID, $0.windowID, $0.targetOrdinal,
+                                  $0.needsUnminimize) },
+            liveWindows: liveWindows)
+        // The Dock pin state decides upfront: unpinned apps get assigned and
+        // unpinned again; apps the user pinned to exactly the target Space
+        // get gathered without touching the pin; pins to any other Desktop
+        // mean dragging, with no wasted Space visit.
+        var assignPlan: [String: Int] = [:]
+        for (bundleID, target) in candidatePlan {
+            let binding = mover.dockAssignment(bundleID: bundleID)
+            let targetUUID = spaceUUIDs.indices.contains(target - 1)
+                ? spaceUUIDs[target - 1] : ""
+            if binding == nil || (binding == targetUUID && !targetUUID.isEmpty) {
+                assignPlan[bundleID] = target
+            } else {
+                WorkspaceLog.write("assign \(bundleID): pinned to another Desktop; "
+                    + "it will be dragged")
+            }
+        }
+        var completed = Set<UInt32>()
+        if !assignPlan.isEmpty {
+            WorkspaceLog.write("assign plan: "
+                + assignPlan.sorted { $0.key < $1.key }
+                    .map { "\($0.key)→Space \($0.value)" }.joined(separator: ", "))
+            var bundlesByTarget: [Int: [String]] = [:]
+            for (bundleID, target) in assignPlan {
+                bundlesByTarget[target, default: []].append(bundleID)
+            }
+            for (targetOrdinal, bundles) in bundlesByTarget.sorted(by: { $0.key < $1.key }) {
+                guard await mover.switchToOrdinal(targetOrdinal,
+                                                  displayUUID: displayUUID,
+                                                  spaceIDs: spaceIDs) else { continue }
+                for bundleID in bundles.sorted() {
+                    let bundleJobs = moveJobs.filter { $0.bundleID == bundleID }
+                    guard let appName = bundleJobs.first?.appName else { continue }
+                    if let failure = await mover.assignAppToCurrentSpace(
+                        appName: appName, bundleID: bundleID,
+                        jobWindowIDs: bundleJobs.map(\.windowID),
+                        displayUUID: displayUUID) {
+                        WorkspaceLog.write("assign \(appName): \(failure); "
+                            + "falling back to dragging")
+                        continue
+                    }
+                    for var job in bundleJobs {
+                        job.sourceOrdinal = job.targetOrdinal
+                        if let failure = await perform(job, displayUUID: displayUUID,
+                                                       spaceIDs: spaceIDs) {
+                            failures[job.windowID] = failure
+                            WorkspaceLog.write("place \"\(job.label)\": \(failure)")
+                        } else {
+                            WorkspaceLog.write("place \"\(job.label)\": ok (assigned)")
+                        }
+                        completed.insert(job.windowID)
+                    }
+                }
+            }
+        }
+
+        // Phase 2 — everything else travels the drag itinerary.
+        var pending = jobs.filter { !completed.contains($0.windowID) }
         var stalls = 0
         while !pending.isEmpty && stalls < jobs.count * 2 + 4 {
             stalls += 1
@@ -389,7 +485,7 @@ final class WorkspaceProfileExecutor {
             + "\(job.targetOrdinal), frame \(WorkspaceLog.describe(job.targetFrame))")
         var sourceOrdinal = job.sourceOrdinal
         if job.needsUnminimize {
-            guard let axWindow = catalog.axWindow(for: job.windowID, pid: job.pid) else {
+            guard let axWindow = await axWindowPolled(job.windowID, pid: job.pid) else {
                 return "The minimized window is not reachable through AX"
             }
             axWindow.setMinimized(false)
@@ -415,7 +511,7 @@ final class WorkspaceProfileExecutor {
                 return failure
             }
         }
-        guard let axWindow = catalog.axWindow(for: job.windowID, pid: job.pid) else {
+        guard let axWindow = await axWindowPolled(job.windowID, pid: job.pid) else {
             return "The window is not reachable through AX on Space \(job.targetOrdinal)"
         }
         let inPlace = axWindow.frame().map {
@@ -491,6 +587,18 @@ final class WorkspaceProfileExecutor {
             undoStore.replace(WorkspaceUndoSnapshot(profileName: profileName,
                                                     takenAt: Date(), windows: states))
         }
+    }
+
+    /// An app's AX window list refreshes up to a second after a Space
+    /// switch; poll instead of trusting the first read.
+    private func axWindowPolled(_ windowID: UInt32,
+                                pid: pid_t) async -> WorkspaceAXWindow? {
+        var lookup: WorkspaceAXWindow?
+        _ = await poll(timeout: 2.5) {
+            lookup = self.catalog.axWindow(for: windowID, pid: pid)
+            return lookup != nil
+        }
+        return lookup
     }
 
     private func windowCount(bundleID: String, displayUUID: String) -> Int {

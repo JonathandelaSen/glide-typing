@@ -12,14 +12,25 @@ import ApplicationServices
 final class WorkspaceWindowMover {
     private let spaceManager: SpaceManaging
     private let catalog: WorkspaceWindowCatalog
+    /// The grab offset (relative to the window origin) that engaged last
+    /// time, per bundle — custom chromes differ (Spotify's center is a
+    /// search field, ChatGPT's zoom-adjacent strip is dead), so the winner
+    /// goes first on retries.
+    private var grabHintByBundle: [String: CGPoint] = [:]
 
     init(spaceManager: SpaceManaging, catalog: WorkspaceWindowCatalog) {
         self.spaceManager = spaceManager
         self.catalog = catalog
     }
 
-    /// Title-bar grab point: past the traffic lights, well inside the bar.
-    static func grabPoint(for frame: CGRect) -> CGPoint {
+    /// Drag grab point. The strip just right of the zoom (green) button is
+    /// draggable chrome in practically every app, including custom title
+    /// bars (Spotify's search field famously occupies the geometric center);
+    /// without a zoom button, fall back to a conservative title-bar inset.
+    static func grabPoint(for frame: CGRect, zoomButton: CGRect?) -> CGPoint {
+        if let zoom = zoomButton, frame.contains(CGPoint(x: zoom.midX, y: zoom.midY)) {
+            return CGPoint(x: zoom.maxX + 18, y: zoom.midY)
+        }
         let inset = min(140, max(40, frame.width * 0.25))
         return CGPoint(x: frame.minX + inset, y: frame.minY + 12)
     }
@@ -43,12 +54,170 @@ final class WorkspaceWindowMover {
         let arrived = await poll(timeout: 5) {
             self.spaceManager.currentSpaceID(displayUUID: displayUUID) == target
         }
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        try? await Task.sleep(nanoseconds: 350_000_000)
         if !arrived {
             WorkspaceLog.write("mover: switch to Space \(ordinal) did not arrive")
             escapeMissionControl()
         }
         return arrived
+    }
+
+    // MARK: - Dock "Assign To This Desktop"
+
+    /// The app's Desktop pin from the Dock's preferences (a Space UUID), or
+    /// nil when unpinned. Read-only: mutations only ever go through the real
+    /// Dock menu.
+    func dockAssignment(bundleID: String) -> String? {
+        CFPreferencesAppSynchronize("com.apple.spaces" as CFString)
+        guard let bindings = CFPreferencesCopyValue(
+            "app-bindings" as CFString, "com.apple.spaces" as CFString,
+            kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: String]
+        else { return nil }
+        return bindings[bundleID.lowercased()] ?? bindings[bundleID]
+    }
+
+    /// Moves every window of an app to the CURRENT Space through the Dock
+    /// icon's Options menu — a real menu command, no dragging. Only safe
+    /// when the caller has checked that all of the app's windows belong on
+    /// this Space. The LIVE menu marks decide the flow (preference reads can
+    /// be stale): an unpinned app is assigned and unpinned again; an app the
+    /// user pinned to THIS Space gets its pin cycled off and on so the
+    /// windows gather while the pin ends exactly as the user left it; a pin
+    /// to any other Desktop aborts so the caller falls back to dragging.
+    func assignAppToCurrentSpace(appName: String, bundleID: String,
+                                 jobWindowIDs: [UInt32],
+                                 displayUUID: String) async -> String? {
+        guard let current = spaceManager.currentSpaceID(displayUUID: displayUUID) else {
+            return "The current Space is unknown"
+        }
+        guard let item = dockItem(named: appName) else {
+            return "\(appName) has no Dock icon"
+        }
+        guard AXUIElementPerformAction(item, "AXShowMenu" as CFString) == .success else {
+            return "The Dock menu did not open"
+        }
+        let optionsShown = await poll(timeout: 2) {
+            self.menuItem(under: item, titled: ["Este escritorio", "This Desktop"]) != nil
+        }
+        guard optionsShown,
+              let assignItem = menuItem(under: item,
+                                        titled: ["Este escritorio", "This Desktop"]),
+              let noneItem = menuItem(under: item, titled: ["Ninguno", "None"]) else {
+            escapeKey()
+            return "The Dock menu lacks the Assign To options"
+        }
+        let pinnedHere = menuItemMark(assignItem) != nil
+        let unpinned = menuItemMark(noneItem) != nil
+        guard pinnedHere || unpinned else {
+            escapeKey()
+            return "\(appName) is pinned to another Desktop"
+        }
+        if pinnedHere {
+            // Re-pressing a checked "This Desktop" is a no-op, so the gather
+            // needs a real state change: unpin, then pin again.
+            guard AXUIElementPerformAction(noneItem, kAXPressAction as CFString)
+                == .success else {
+                escapeKey()
+                return "Could not cycle the existing Desktop pin"
+            }
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            _ = AXUIElementPerformAction(item, "AXShowMenu" as CFString)
+            let reshown = await poll(timeout: 2) {
+                self.menuItem(under: item,
+                              titled: ["Este escritorio", "This Desktop"]) != nil
+            }
+            guard reshown, let assignAgain = menuItem(
+                under: item, titled: ["Este escritorio", "This Desktop"]) else {
+                escapeKey()
+                return "The Dock menu vanished while cycling the pin"
+            }
+            guard AXUIElementPerformAction(assignAgain, kAXPressAction as CFString)
+                == .success else {
+                escapeKey()
+                return "Re-pinning to this Desktop failed"
+            }
+        } else {
+            guard AXUIElementPerformAction(assignItem, kAXPressAction as CFString)
+                == .success else {
+                escapeKey()
+                return "Pressing 'This Desktop' failed"
+            }
+        }
+        let arrived = await poll(timeout: 4) {
+            jobWindowIDs.allSatisfy { self.spaceManager.spaceID(ofWindow: $0) == current }
+        }
+        if !pinnedHere {
+            // The Dock rebuilds its item after gathering the windows, so the
+            // unpin needs a fresh element each try and a verified result.
+            var cleared = false
+            for _ in 0..<3 {
+                guard let freshItem = dockItem(named: appName) else { break }
+                _ = AXUIElementPerformAction(freshItem, "AXShowMenu" as CFString)
+                let reopened = await poll(timeout: 2) {
+                    self.menuItem(under: freshItem, titled: ["Ninguno", "None"]) != nil
+                }
+                if reopened,
+                   let none = menuItem(under: freshItem, titled: ["Ninguno", "None"]) {
+                    _ = AXUIElementPerformAction(none, kAXPressAction as CFString)
+                } else {
+                    escapeKey()
+                }
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                if dockAssignment(bundleID: bundleID) == nil {
+                    cleared = true
+                    break
+                }
+            }
+            if !cleared {
+                WorkspaceLog.write("mover: WARNING — could not clear the Desktop "
+                    + "pin for \(appName); remove it via its Dock icon › Options")
+            }
+        }
+        guard arrived else {
+            return "\(appName)'s windows did not arrive via Dock assignment"
+        }
+        WorkspaceLog.write("mover: \(appName) assigned to the current Space "
+            + "(\(jobWindowIDs.count) window(s))"
+            + (pinnedHere ? ", user pin kept" : " and unpinned"))
+        return nil
+    }
+
+    private func dockItem(named name: String) -> AXUIElement? {
+        guard let dock = dockElement() else { return nil }
+        func walk(_ element: AXUIElement, depth: Int) -> AXUIElement? {
+            guard depth < 4 else { return nil }
+            if axString(element, kAXRoleAttribute) == "AXDockItem",
+               axString(element, kAXTitleAttribute) == name {
+                return element
+            }
+            for child in axChildren(element) {
+                if let found = walk(child, depth: depth + 1) { return found }
+            }
+            return nil
+        }
+        return walk(dock, depth: 0)
+    }
+
+    private func menuItem(under root: AXUIElement, titled titles: [String],
+                          depth: Int = 0) -> AXUIElement? {
+        guard depth < 6 else { return nil }
+        if axString(root, kAXRoleAttribute) == "AXMenuItem",
+           let title = axString(root, kAXTitleAttribute), titles.contains(title) {
+            return root
+        }
+        for child in axChildren(root) {
+            if let found = menuItem(under: child, titled: titles, depth: depth + 1) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private func menuItemMark(_ item: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(item, "AXMenuItemMarkChar" as CFString,
+                                            &value) == .success else { return nil }
+        return value as? String
     }
 
     // MARK: - Cross-Space carry (edge-pinned drag)
@@ -61,45 +230,77 @@ final class WorkspaceWindowMover {
         guard let app = NSRunningApplication(processIdentifier: pid) else {
             return "The owning app is gone"
         }
-        guard let axWindow = catalog.axWindow(for: windowID, pid: pid) else {
+        let bundleID = app.bundleIdentifier ?? ""
+        // The app's AX window list refreshes up to a second after a Space
+        // switch; poll instead of trusting the first read.
+        var lookup: WorkspaceAXWindow?
+        _ = await poll(timeout: 2.5) {
+            lookup = self.catalog.axWindow(for: windowID, pid: pid)
+            return lookup != nil
+        }
+        guard let axWindow = lookup else {
             return "AX cannot reach the window on the active Space"
         }
-        app.activate()
-        _ = await poll(timeout: 1.5) {
-            NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+            app.activate()
+            _ = await poll(timeout: 1.0) {
+                NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+            }
         }
         axWindow.raise()
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        try? await Task.sleep(nanoseconds: 250_000_000)
         guard let frame = axWindow.frame() else {
             return "The window frame is unreadable"
         }
 
         let display = CGDisplayBounds(CGMainDisplayID())
+        let zoomButton = axWindow.zoomButtonFrame()
+        var candidates: [CGPoint] = []
+        if let hint = grabHintByBundle[bundleID] {
+            candidates.append(CGPoint(x: frame.origin.x + hint.x,
+                                      y: frame.origin.y + hint.y))
+        }
+        candidates.append(contentsOf: dragSafePoints(for: frame, zoomButton: zoomButton))
+        candidates.append(Self.grabPoint(for: frame, zoomButton: zoomButton))
+        candidates.append(Self.grabPoint(for: frame, zoomButton: nil))
+        candidates.append(CGPoint(x: frame.midX, y: frame.minY + 12))
+        var deduped: [CGPoint] = []
+        for point in candidates
+            where !deduped.contains(where: { abs($0.x - point.x) < 4
+                && abs($0.y - point.y) < 4 }) {
+            deduped.append(point)
+        }
+        candidates = Array(deduped.prefix(5))
         var cursor = CGPoint.zero
         var engaged = false
-        for attempt in 0..<2 {
-            let grab = attempt == 0 ? Self.grabPoint(for: frame)
-                : CGPoint(x: frame.midX, y: frame.minY + 12)
+        for (attempt, grab) in candidates.enumerated() {
+            WorkspaceLog.write("mover: grab attempt \(attempt + 1) at "
+                + "(\(Int(grab.x)),\(Int(grab.y)))")
             mouse(.mouseMoved, grab)
-            try? await Task.sleep(nanoseconds: 180_000_000)
+            try? await Task.sleep(nanoseconds: 150_000_000)
             mouse(.leftMouseDown, grab)
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             cursor = grab
             for step in 1...4 {
                 cursor = CGPoint(x: grab.x + CGFloat(step) * 6,
                                  y: grab.y + CGFloat(step) * 4)
                 mouse(.leftMouseDragged, cursor)
-                try? await Task.sleep(nanoseconds: 45_000_000)
+                try? await Task.sleep(nanoseconds: 40_000_000)
             }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: 180_000_000)
             if let moved = catalog.cgBounds(of: windowID),
                abs(moved.origin.x - frame.origin.x)
                    + abs(moved.origin.y - frame.origin.y) > 8 {
                 engaged = true
+                grabHintByBundle[bundleID] = CGPoint(x: grab.x - frame.origin.x,
+                                                     y: grab.y - frame.origin.y)
                 break
             }
             mouse(.leftMouseUp, cursor)
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            // The failed press may have landed in a control (Spotify's
+            // search field); ESC clears any focus or popup it caused.
+            escapeKey()
             WorkspaceLog.write("mover: drag engage attempt \(attempt + 1) failed "
                 + "for window \(windowID)")
         }
@@ -158,7 +359,7 @@ final class WorkspaceWindowMover {
             WorkspaceLog.write("mover: carried window \(windowID) one Space "
                 + (goRight ? "right" : "left") + ", now ordinal "
                 + "\(currentOrdinal().map(String.init) ?? "?")")
-            try? await Task.sleep(nanoseconds: 600_000_000)
+            try? await Task.sleep(nanoseconds: 450_000_000)
         }
         drop(at: CGPoint(x: display.midX, y: pinY + 200))
         let landed = await poll(timeout: 2) {
@@ -170,6 +371,49 @@ final class WorkspaceWindowMover {
                 + "\(now.map(String.init) ?? "?") instead of Space \(toOrdinal)"
         }
         return nil
+    }
+
+    /// Hit-tests a spread of title-area points and keeps only those landing
+    /// on inert chrome: grabbing a button focuses it (Spotify's search bar)
+    /// and grabbing a tab tears it off (Brave), so interactive roles are
+    /// rejected before any mouse button goes down. The engage check remains
+    /// the final arbiter.
+    private func dragSafePoints(for frame: CGRect,
+                                zoomButton: CGRect?) -> [CGPoint] {
+        let systemWide = AXUIElementCreateSystemWide()
+        let interactiveRoles: Set<String> = [
+            "AXButton", "AXTextField", "AXSearchField", "AXTextArea",
+            "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXSlider",
+            "AXMenuButton", "AXComboBox", "AXLink", "AXTab", "AXTabGroup",
+            "AXDisclosureTriangle", "AXIncrementor", "AXSegmentedControl",
+            "AXScrollBar",
+        ]
+        var rows: [CGFloat] = [frame.minY + 12]
+        if let zoom = zoomButton { rows.insert(zoom.midY, at: 0) }
+        rows.append(frame.minY + 45)
+        var columns: [CGFloat] = []
+        if let zoom = zoomButton {
+            columns.append(zoom.maxX + 18)
+            columns.append(zoom.maxX + 90)
+        }
+        columns.append(contentsOf: [0.25, 0.4, 0.55, 0.7, 0.85]
+            .map { frame.minX + frame.width * $0 })
+        var safe: [CGPoint] = []
+        for y in rows {
+            for x in columns {
+                let point = CGPoint(x: x, y: y)
+                guard frame.contains(point), safe.count < 4 else { continue }
+                var element: AXUIElement?
+                guard AXUIElementCopyElementAtPosition(
+                    systemWide, Float(point.x), Float(point.y),
+                    &element) == .success, let element else { continue }
+                let role = axString(element, kAXRoleAttribute) ?? ""
+                if !interactiveRoles.contains(role) {
+                    safe.append(point)
+                }
+            }
+        }
+        return safe
     }
 
     // MARK: - Mission Control via the Dock's AX tree
@@ -273,6 +517,10 @@ final class WorkspaceWindowMover {
 
     private func escapeMissionControl() {
         guard !liveSpaceButtonFrames().isEmpty else { return }
+        escapeKey()
+    }
+
+    private func escapeKey() {
         let source = CGEventSource(stateID: .combinedSessionState)
         for down in [true, false] {
             CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: down)?

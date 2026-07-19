@@ -98,6 +98,8 @@ final class WorkspaceCaptureService {
         guard !captured.isEmpty else { throw CaptureError.nothingCaptured }
 
         let rules = Self.rules(from: captured, display: display,
+                               spaceUUIDs: spaceManager.orderedUserSpaceUUIDs(
+                                displayUUID: display.uuid),
                                recipeIDByBundle: recipeIDs())
         let now = Date()
         let profile = WorkspaceProfile(id: UUID(), name: name, display: signature,
@@ -171,8 +173,10 @@ final class WorkspaceCaptureService {
 
     /// Pure rule construction so slot naming and normalization stay checkable.
     /// Multi-window apps get lettered slots in capture order (Brave A, B, …);
-    /// titles are stored only as hints.
+    /// titles are stored only as hints, and each rule anchors to its Space's
+    /// stable UUID with the ordinal kept as fallback.
     static func rules(from captured: [CapturedWindow], display: DisplaySignature,
+                      spaceUUIDs: [String],
                       recipeIDByBundle: [String: String]) -> [WorkspaceWindowRule] {
         var totalPerBundle: [String: Int] = [:]
         for window in captured {
@@ -190,12 +194,17 @@ final class WorkspaceCaptureService {
                     let letter = Character(UnicodeScalar(65 + (index % 26))!)
                     slot = "\(window.appName) \(letter)"
                 }
+                let uuidIndex = window.spaceOrdinal - 1
+                let spaceUUID = spaceUUIDs.indices.contains(uuidIndex)
+                    && !spaceUUIDs[uuidIndex].isEmpty
+                    ? spaceUUIDs[uuidIndex] : nil
                 return WorkspaceWindowRule(
                     id: UUID(),
                     bundleID: window.bundleID,
                     slotName: slot,
                     displayUUID: display.uuid,
                     spaceOrdinal: window.spaceOrdinal,
+                    spaceUUID: spaceUUID,
                     frame: WorkspaceGeometry.normalize(window.frame,
                                                        in: display.visibleFrame),
                     stackingRank: window.stackingRank,

@@ -57,6 +57,14 @@ struct WorkspaceAXWindow {
     func title() -> String? { copyValue(kAXTitleAttribute) as? String }
     func role() -> String? { copyValue(kAXRoleAttribute) as? String }
     func subrole() -> String? { copyValue(kAXSubroleAttribute) as? String }
+
+    /// The zoom (green) button's frame anchors a safe drag point: the strip
+    /// right of it is draggable chrome even in custom-title-bar apps.
+    func zoomButtonFrame() -> CGRect? {
+        guard let value = copyValue(kAXZoomButtonAttribute) else { return nil }
+        let button = WorkspaceAXWindow(element: value as! AXUIElement)
+        return button.frame()
+    }
 }
 
 /// CG-primary window snapshot: CGWindowList sees every Space's windows with

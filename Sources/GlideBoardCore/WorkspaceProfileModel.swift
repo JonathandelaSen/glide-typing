@@ -5,7 +5,7 @@ import Foundation
 /// top-left global coordinate system (what AX and CGWindowList report).
 /// AppKit bottom-left frames are converted once, at the resolver boundary.
 enum WorkspaceSchema {
-    static let version = 1
+    static let version = 2
 }
 
 struct NormalizedRect: Codable, Equatable {
@@ -68,13 +68,18 @@ struct DisplayConfigurationSignature: Codable, Equatable {
 }
 
 /// Titles are diagnostic hints only: window identity for multi-window apps is
-/// the slot (bundle ID + capture order), never the mutable title.
+/// the slot (bundle ID + capture order), never the mutable title. The Space
+/// target is POSITIONAL (the ordinal: "the third desktop left-to-right"),
+/// matching how the user reads their Spaces; the captured desktop UUID
+/// (schema 2) is kept only to detect that desktops were reordered since
+/// capture and say so in the report.
 struct WorkspaceWindowRule: Codable, Equatable, Identifiable {
     var id: UUID
     var bundleID: String
     var slotName: String
     var displayUUID: String
     var spaceOrdinal: Int
+    var spaceUUID: String?
     var frame: NormalizedRect
     var stackingRank: Int
     var axRoleHint: String?

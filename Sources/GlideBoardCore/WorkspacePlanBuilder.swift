@@ -133,6 +133,46 @@ enum WorkspacePlanBuilder {
             diagnostics: diagnostics)
     }
 
+    /// Where each rule's captured desktop sits NOW, by UUID. Applying is
+    /// positional (the captured ordinal), so this is only the telltale for
+    /// "the desktops were reordered since capture" diagnostics. Rules whose
+    /// UUID is missing keep their captured ordinal.
+    static func resolveSpaceOrdinals(_ rules: [WorkspaceWindowRule],
+                                     currentUUIDs: [String]) -> [WorkspaceWindowRule] {
+        rules.map { rule in
+            guard let uuid = rule.spaceUUID, !uuid.isEmpty,
+                  let index = currentUUIDs.firstIndex(of: uuid) else { return rule }
+            var rule = rule
+            rule.spaceOrdinal = index + 1
+            return rule
+        }
+    }
+
+    /// Bundles whose cross-Space moves can ride the Dock's "Assign To This
+    /// Desktop" command instead of a drag: every job of the bundle targets
+    /// the same Space, and every other live window of the bundle already
+    /// sits there — the assignment gathers ALL of an app's windows, and
+    /// extras must never be moved.
+    static func dockAssignPlan(jobs: [(bundleID: String, windowID: UInt32,
+                                       targetOrdinal: Int, isMinimized: Bool)],
+                               liveWindows: [WorkspaceLiveWindow]) -> [String: Int] {
+        var plan: [String: Int] = [:]
+        let jobWindowIDs = Set(jobs.map(\.windowID))
+        for bundleID in Set(jobs.map(\.bundleID)) {
+            let bundleJobs = jobs.filter { $0.bundleID == bundleID }
+            let targets = Set(bundleJobs.map(\.targetOrdinal))
+            guard targets.count == 1, let target = targets.first,
+                  !bundleJobs.contains(where: \.isMinimized) else { continue }
+            let untouched = liveWindows.filter {
+                $0.bundleID == bundleID && !jobWindowIDs.contains($0.cgWindowID)
+                    && !$0.isMinimized
+            }
+            guard untouched.allSatisfy({ $0.spaceOrdinal == target }) else { continue }
+            plan[bundleID] = target
+        }
+        return plan
+    }
+
     /// Visit order for placement jobs that minimizes Space switches: keep
     /// consuming jobs whose source is the Space the cursor is on (windows
     /// without a Space can be handled anywhere); the cursor then follows

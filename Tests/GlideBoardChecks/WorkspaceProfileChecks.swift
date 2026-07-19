@@ -455,11 +455,15 @@ func workspaceProfileChecks() async {
         ]
         let rules = WorkspaceCaptureService.rules(
             from: captured, display: display,
+            spaceUUIDs: ["U1", "U2", "U3", "U4", "", "U6"],
             recipeIDByBundle: ["com.brave.Browser": "brave-new-window"])
         try expectEqual(rules.map(\.slotName), ["Spotify", "Brave Browser A",
                                                 "Brave Browser B"],
                         "rules sort by Space and letter multi-window apps in order")
         try expectEqual(rules[1].spaceOrdinal, 4)
+        try expectEqual(rules[0].spaceUUID, "U1")
+        try expectEqual(rules[1].spaceUUID, "U4")
+        try expectNil(rules[2].spaceUUID, "an empty Space UUID is stored as nil")
         try expectEqual(rules[1].recipeID, "brave-new-window")
         try expectEqual(rules[1].titleHint, "Another tab")
         try expectNil(rules[0].recipeID)
@@ -518,15 +522,107 @@ func workspaceProfileChecks() async {
         try expectEqual(all.sorted(), [0, 1, 2, 3], "every job is visited exactly once")
     }
 
-    await Checks.shared.test("the drag grab point stays inside the title bar") {
-        let wide = WorkspaceWindowMover.grabPoint(
-            for: CGRect(x: 100, y: 200, width: 1600, height: 900))
-        try expectEqual(wide, CGPoint(x: 240, y: 212),
-                        "wide windows clamp the inset to 140")
-        let narrow = WorkspaceWindowMover.grabPoint(
-            for: CGRect(x: 0, y: 30, width: 120, height: 300))
-        try expectEqual(narrow, CGPoint(x: 40, y: 42),
+    await Checks.shared.test("the drag grab point anchors to the zoom button") {
+        let frame = CGRect(x: 100, y: 200, width: 1600, height: 900)
+        let zoom = CGRect(x: 140, y: 208, width: 14, height: 14)
+        try expectEqual(WorkspaceWindowMover.grabPoint(for: frame, zoomButton: zoom),
+                        CGPoint(x: 172, y: 215),
+                        "right of the green button, vertically centered on it")
+        try expectEqual(WorkspaceWindowMover.grabPoint(for: frame, zoomButton: nil),
+                        CGPoint(x: 240, y: 212),
+                        "no zoom button falls back to the clamped title inset")
+        let foreignZoom = CGRect(x: 5000, y: 5000, width: 14, height: 14)
+        try expectEqual(WorkspaceWindowMover.grabPoint(for: frame,
+                                                       zoomButton: foreignZoom),
+                        CGPoint(x: 240, y: 212),
+                        "a zoom frame outside the window is ignored")
+        try expectEqual(WorkspaceWindowMover.grabPoint(
+            for: CGRect(x: 0, y: 30, width: 120, height: 300), zoomButton: nil),
+                        CGPoint(x: 40, y: 42),
                         "narrow windows keep at least 40pt from the left edge")
+    }
+
+    await Checks.shared.test("rules re-anchor to their Space UUID, ordinal as fallback") {
+        var anchored = makeRule(bundleID: "com.spotify.client", slot: "Spotify", space: 2)
+        anchored.spaceUUID = "U-B"
+        var gone = makeRule(bundleID: "com.apple.finder", slot: "Finder", space: 3)
+        gone.spaceUUID = "U-GONE"
+        let legacy = makeRule(bundleID: "com.openai.codex", slot: "ChatGPT", space: 1)
+        let resolved = WorkspacePlanBuilder.resolveSpaceOrdinals(
+            [anchored, gone, legacy], currentUUIDs: ["U-C", "U-A", "U-B"])
+        try expectEqual(resolved[0].spaceOrdinal, 3,
+                        "U-B moved to position 3, so the rule follows it")
+        try expectEqual(resolved[1].spaceOrdinal, 3,
+                        "a vanished UUID keeps the captured ordinal")
+        try expectEqual(resolved[2].spaceOrdinal, 1,
+                        "pre-UUID rules keep their ordinal")
+    }
+
+    await Checks.shared.test("Dock assignment only covers whole-app single-Space moves") {
+        let plan = WorkspacePlanBuilder.dockAssignPlan(
+            jobs: [
+                (bundleID: "com.spotify.client", windowID: 10, targetOrdinal: 1,
+                 isMinimized: false),
+                (bundleID: "com.brave.Browser", windowID: 30, targetOrdinal: 4,
+                 isMinimized: false),
+                (bundleID: "com.brave.Browser", windowID: 31, targetOrdinal: 5,
+                 isMinimized: false),
+                (bundleID: "com.apple.finder", windowID: 40, targetOrdinal: 6,
+                 isMinimized: false),
+                (bundleID: "com.openai.codex", windowID: 50, targetOrdinal: 2,
+                 isMinimized: true),
+            ],
+            liveWindows: [
+                makeWindow(id: 10, bundleID: "com.spotify.client",
+                           frame: .zero, space: 501, ordinal: 1),
+                makeWindow(id: 30, bundleID: "com.brave.Browser",
+                           frame: .zero, space: 501, ordinal: 1),
+                makeWindow(id: 31, bundleID: "com.brave.Browser",
+                           frame: .zero, space: 501, ordinal: 1),
+                makeWindow(id: 40, bundleID: "com.apple.finder",
+                           frame: .zero, space: 501, ordinal: 1),
+                makeWindow(id: 41, bundleID: "com.apple.finder",
+                           frame: .zero, space: 502, ordinal: 2),
+                makeWindow(id: 50, bundleID: "com.openai.codex",
+                           frame: .zero, space: nil, ordinal: nil, minimized: true),
+            ])
+        try expectEqual(plan, ["com.spotify.client": 1],
+                        "split targets (Brave), an extra elsewhere (Finder) and a "
+                        + "minimized job (ChatGPT) all fall back to dragging")
+
+        let extraOnTarget = WorkspacePlanBuilder.dockAssignPlan(
+            jobs: [(bundleID: "com.apple.finder", windowID: 40, targetOrdinal: 2,
+                    isMinimized: false)],
+            liveWindows: [
+                makeWindow(id: 40, bundleID: "com.apple.finder",
+                           frame: .zero, space: 501, ordinal: 1),
+                makeWindow(id: 41, bundleID: "com.apple.finder",
+                           frame: .zero, space: 502, ordinal: 2),
+            ])
+        try expectEqual(extraOnTarget, ["com.apple.finder": 2],
+                        "an extra already sitting on the target does not block")
+    }
+
+    await Checks.shared.test("schema 1 profiles load under schema 2 with nil UUIDs") {
+        let directory = temporaryDirectory()
+        let url = directory.appendingPathComponent("workspace_profiles.json")
+        let v1 = """
+        {"schemaVersion": 1, "profiles": [{
+          "id": "\(UUID().uuidString)", "name": "Legacy",
+          "display": {"displays": [], "screensHaveSeparateSpaces": false},
+          "rules": [{"id": "\(UUID().uuidString)", "bundleID": "com.spotify.client",
+                     "slotName": "Spotify", "displayUUID": "D-1", "spaceOrdinal": 2,
+                     "frame": {"x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5},
+                     "stackingRank": 0, "isExcluded": false}],
+          "createdAt": "2026-07-18T10:00:00Z", "updatedAt": "2026-07-18T10:00:00Z"}]}
+        """
+        try Data(v1.utf8).write(to: url)
+        let store = WorkspaceProfileStore(directory: directory)
+        try expectNil(store.loadFailure, String(describing: store.loadFailure))
+        try expectEqual(store.profiles.count, 1)
+        try expectEqual(store.profiles[0].rules[0].spaceOrdinal, 2)
+        try expectNil(store.profiles[0].rules[0].spaceUUID,
+                      "v1 rules migrate with no Space UUID")
     }
 
     await Checks.shared.test("the recipe registry covers the initial app inventory") {
